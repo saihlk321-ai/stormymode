@@ -408,7 +408,7 @@ textarea, input, select {
   white-space: pre-wrap;
 }
 .reader-token {
-  color: inherit;
+  color: var(--ink);
   font-weight: inherit;
   
 }
