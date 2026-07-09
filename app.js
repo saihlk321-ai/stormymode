@@ -38,14 +38,27 @@ function formatDate(ts) {
 function wordCount(story) {
   return (story.chapters || []).reduce((sum, c) => sum + (c.text || "").trim().split(/\s+/).filter(Boolean).length, 0);
 }
-function tokenRegex() { return /\{\{([a-z0-9]+)\}\}/gi; }
+function tokenRegex() { return /\{\{([^{}]+)\}\}/g; }
+function resolveCharacterToken(raw, chars) {
+  const key = raw.trim().toLowerCase();
+  if (!key) return null;
+  return chars.find((c) => c.id.toLowerCase() === key) ||
+         chars.find((c) => (c.name || "").trim().toLowerCase() === key) ||
+         null;
+}
 function renderTokensHTML(text, story) {
   const chars = story.characters || [];
-  const escaped = escapeHtml(text || "");
-  return escaped.replace(tokenRegex(), (m, id) => {
-    const c = chars.find((ch) => ch.id === id);
-    return c ? `<span class="reader-token">${escapeHtml(c.name)}</span>` : `<span class="reader-token">[deleted]</span>`;
-  });
+  const src = text || "";
+  const re = tokenRegex();
+  let out = "", lastIndex = 0, m;
+  while ((m = re.exec(src))) {
+    out += escapeHtml(src.slice(lastIndex, m.index));
+    const c = resolveCharacterToken(m[1], chars);
+    out += c ? `<span class="reader-token">${escapeHtml(c.name)}</span>` : `<span class="reader-token">[deleted]</span>`;
+    lastIndex = re.lastIndex;
+  }
+  out += escapeHtml(src.slice(lastIndex));
+  return out;
 }
 
 /* ---------- IndexedDB ---------- */
