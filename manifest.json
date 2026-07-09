@@ -1,0 +1,17 @@
+{
+  "name": "Waypoint — Story Writer",
+  "short_name": "Waypoint",
+  "description": "Write and read stories, linear or choose-your-own-adventure, with a chapter map and per-story character renaming.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#EAE3D3",
+  "theme_color": "#3E6B63",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
