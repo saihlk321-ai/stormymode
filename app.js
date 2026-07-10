@@ -26,6 +26,8 @@ const ICON = {
   minus: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/></svg>`,
   frame: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>`,
   chevronDown: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>`,
+  wand: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20L15 9"/><path d="M17 3l.9 1.9L20 5.8l-2.1.9L17 8.6l-.9-1.9L14 5.8l2.1-.9L17 3z"/><path d="M18.5 13.5l.6 1.3 1.3.6-1.3.6-.6 1.3-.6-1.3-1.3-.6 1.3-.6.6-1.3z"/></svg>`,
+  branch: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2.3"/><circle cx="6" cy="19" r="2.3"/><circle cx="18" cy="12" r="2.3"/><path d="M6 7.3V16.7M6 10c0 3 3 2 5.5 2H14"/></svg>`,
 };
 
 /* ---------- utils ---------- */
@@ -139,6 +141,7 @@ function makeStory(title, type) {
 /* ---------- app state ---------- */
 const state = { current: null, drawerOpen: false, saveTimer: null };
 const app = document.getElementById("app");
+let readerHistory = [];
 
 /* ---------- theme (light / dark) ---------- */
 function currentTheme() {
@@ -210,6 +213,7 @@ async function route() {
     if (!s) { navigate("#/"); return; }
     normalizeStory(s);
     state.current = s;
+    readerHistory = [];
   }
   if (r.view === "edit") return renderEditor(r.chapterId);
   if (r.view === "read") return renderReader(r.chapterId);
@@ -401,7 +405,8 @@ function renderDrawer() {
           <input class="char-name-input" value="${escapeHtml(c.name)}" data-id="${c.id}">
           <div class="char-tag">{{${c.id}}}</div>
         </div>
-        <button class="char-del" data-id="${c.id}" title="Remove character">${ICON.x}</button>`;
+        <button class="char-icon-btn" data-tokenize="${c.id}" title="Find & replace a word with this character's token, everywhere in the story">${ICON.wand}</button>
+        <button class="char-icon-btn" data-id="${c.id}" title="Remove character">${ICON.x}</button>`;
       list.appendChild(row);
     });
   }
@@ -413,7 +418,13 @@ function renderDrawer() {
       av.textContent = (inp.value || "?")[0].toUpperCase();
     });
   });
-  list.querySelectorAll(".char-del").forEach((btn) => {
+  list.querySelectorAll("[data-tokenize]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const c = s.characters.find((x) => x.id === btn.dataset.tokenize);
+      if (c) tokenizeAcrossStory(c);
+    });
+  });
+  list.querySelectorAll(".char-icon-btn[data-id]").forEach((btn) => {
     btn.addEventListener("click", () => {
       s.characters = s.characters.filter((x) => x.id !== btn.dataset.id);
       markDirty();
@@ -431,10 +442,50 @@ function renderDrawer() {
     refreshUnderlyingTextIfVisible();
   };
 }
+
+/* find-and-replace a plain word/phrase into a character token, across every chapter */
+function tokenizeWordInText(text, needleRegex, characterId) {
+  const re = tokenRegex();
+  let result = "", lastIndex = 0, m, count = 0;
+  while ((m = re.exec(text))) {
+    const segment = text.slice(lastIndex, m.index);
+    result += segment.replace(needleRegex, () => { count++; return `{{${characterId}}}`; });
+    result += m[0];
+    lastIndex = re.lastIndex;
+  }
+  result += text.slice(lastIndex).replace(needleRegex, () => { count++; return `{{${characterId}}}`; });
+  return { text: result, count };
+}
+function tokenizeAcrossStory(character) {
+  const s = state.current;
+  const query = prompt(`Replace every mention of a word or phrase with ${character.name}'s token, across the whole story.\n\nWhat should we search for?`, character.name);
+  if (query === null) return;
+  const needle = query.trim();
+  if (!needle) return;
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const needleRegex = new RegExp(`\\b${escaped}\\b`, "gi");
+  let total = 0;
+  s.chapters.forEach((ch) => {
+    const { text, count } = tokenizeWordInText(ch.text || "", needleRegex, character.id);
+    if (count > 0) { ch.text = text; total += count; }
+  });
+  if (total === 0) { toast(`No mentions of "${needle}" found`); return; }
+  markDirty();
+  toast(`Replaced ${total} mention${total === 1 ? "" : "s"} with ${character.name}'s token`);
+  refreshUnderlyingTextIfVisible();
+}
+
 function refreshUnderlyingTextIfVisible() {
   const r = parseHash();
-  if (r.view === "read") renderReaderBody();
-  if (r.view === "edit") renderTokenToolbar();
+  const s = state.current;
+  if (!s) return;
+  if (r.view === "read") {
+    renderReaderBody();
+  } else if (r.view === "edit") {
+    const chapter = s.chapters.find((c) => c.id === r.chapterId) || s.chapters[0];
+    renderChapterRail(chapter.id);
+    renderManuscript(chapter);
+  }
 }
 
 /* ================= EDITOR ================= */
@@ -492,8 +543,15 @@ function renderManuscript(chapter) {
   const s = state.current;
   const m = document.getElementById("manuscript");
   const idx = s.chapters.findIndex((c) => c.id === chapter.id);
+  const prevCh = s.chapters[idx - 1], nextCh = s.chapters[idx + 1];
 
   m.innerHTML = `
+    <div class="chapter-nav-row">
+      <button class="btn btn--sm" id="prevChBtn" ${!prevCh ? "disabled" : ""} title="${prevCh ? escapeHtml(prevCh.title) : ""}">${ICON.chevronL} Previous</button>
+      <span class="chapter-nav-pos">${idx + 1} / ${s.chapters.length}</span>
+      <button class="btn btn--sm" id="nextChBtn" ${!nextCh ? "disabled" : ""} title="${nextCh ? escapeHtml(nextCh.title) : ""}">Next ${ICON.chevronR}</button>
+    </div>
+
     <label class="field-label">Chapter title</label>
     <input class="chapter-title-input" id="chTitle" value="${escapeHtml(chapter.title)}">
 
@@ -520,6 +578,9 @@ function renderManuscript(chapter) {
     markDirty();
     renderChapterRail(chapter.id);
   });
+  const prevBtn = document.getElementById("prevChBtn"), nextBtn = document.getElementById("nextChBtn");
+  if (prevCh) prevBtn.onclick = () => navigate(`#/story/${s.id}/edit?chapter=${prevCh.id}`);
+  if (nextCh) nextBtn.onclick = () => navigate(`#/story/${s.id}/edit?chapter=${nextCh.id}`);
   const textarea = document.getElementById("chText");
   textarea.addEventListener("input", (e) => { chapter.text = e.target.value; markDirty(); });
 
@@ -692,14 +753,25 @@ function renderReaderBody(chapterId) {
     }
   }
 
+  const backHTML = s.type === "cyoa" && readerHistory.length > 0
+    ? `<div class="reader-back-row"><button class="btn btn--sm btn--ghost" id="readerBackBtn">${ICON.chevronL} Back</button></div>` : "";
+
   page.innerHTML = `
+    ${backHTML}
     <div class="reader-eyebrow">${s.type === "cyoa" ? "Choose your adventure" : `Chapter ${idx + 1} of ${s.chapters.length}`}</div>
     <h1 class="reader-title">${escapeHtml(chapter.title)}</h1>
     <div class="reader-body">${renderTokensHTML(chapter.text, s) || `<span style="color:var(--ink-faint)">This chapter is empty so far.</span>`}</div>
     ${navHTML}
   `;
   page.querySelectorAll("[data-goto]").forEach((btn) => {
-    btn.onclick = () => navigate(`#/story/${s.id}/read?chapter=${btn.dataset.goto}`);
+    btn.onclick = () => {
+      readerHistory.push(chapter.id);
+      navigate(`#/story/${s.id}/read?chapter=${btn.dataset.goto}`);
+    };
+  });
+  document.getElementById("readerBackBtn")?.addEventListener("click", () => {
+    const prevId = readerHistory.pop();
+    if (prevId) navigate(`#/story/${s.id}/read?chapter=${prevId}`);
   });
   page.scrollTop = 0;
   document.querySelector(".reader-wrap")?.scrollTo?.(0, 0);
@@ -723,7 +795,8 @@ function renderMap(mode) {
       <div class="map-toolbar">
         ${s.type === "cyoa" ? `
           <div class="map-seg">
-            <button class="map-seg__btn map-seg__btn--active" data-mmode="move" title="Drag waypoints to reposition them">${ICON.move} Move</button>
+            <button class="map-seg__btn map-seg__btn--active" data-mmode="move" title="Drag a waypoint to reposition it">${ICON.move} Move</button>
+            <button class="map-seg__btn" data-mmode="branch" title="Drag a waypoint to move it and everything downstream of it together">${ICON.branch} Branch</button>
             <button class="map-seg__btn" data-mmode="connect" title="Drag between waypoints to add a path">${ICON.link} Connect</button>
           </div>` : ""}
         <button class="btn btn--sm btn--primary" id="btnAddChapter">${ICON.plus} Chapter</button>
@@ -765,6 +838,8 @@ function updateMapLegend(mode) {
   if (s.type === "cyoa") {
     if (mode === "edit" && state.mapMode === "connect") {
       legend.innerHTML = `<span>drag from one waypoint to another to add a path</span><span>tap a path to remove it</span>`;
+    } else if (mode === "edit" && state.mapMode === "branch") {
+      legend.innerHTML = `<span>drag a waypoint to move it and its whole branch together</span>`;
     } else if (mode === "edit") {
       legend.innerHTML = `<span><i style="background:var(--paper-dark);border:2px solid var(--teal)"></i> chapter</span><span><i style="background:var(--paper-dark);border:2px solid var(--gold)"></i> ending</span><span>pinch/scroll to zoom · drag to pan</span>`;
     } else {
@@ -788,6 +863,25 @@ function addChapterFromMap() {
 }
 
 function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+
+/* -- every chapter downstream of a given chapter, via choices -- */
+function collectDescendants(chapter, allChapters) {
+  const byId = Object.fromEntries(allChapters.map((c) => [c.id, c]));
+  const seen = new Set([chapter.id]);
+  const queue = (chapter.choices || []).map((ch) => ch.targetId).filter(Boolean);
+  const result = [];
+  while (queue.length) {
+    const id = queue.shift();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const c = byId[id];
+    if (c) {
+      result.push(c);
+      (c.choices || []).forEach((ch) => { if (ch.targetId) queue.push(ch.targetId); });
+    }
+  }
+  return result;
+}
 
 /* -- which chapters a collapsed branch is hiding -- */
 function computeHiddenSet(chapters) {
@@ -975,6 +1069,7 @@ function drawMap(mode) {
   const viewport = document.getElementById("mapViewport");
   if (!viewport) return;
   const connectMode = mode === "edit" && s.type === "cyoa" && state.mapMode === "connect";
+  const branchMode = mode === "edit" && s.type === "cyoa" && state.mapMode === "branch";
 
   const { hidden, hiddenCount } = s.type === "cyoa" ? computeHiddenSet(s.chapters) : { hidden: new Set(), hiddenCount: {} };
   const chapters = s.chapters.filter((c) => !hidden.has(c.id));
@@ -1016,6 +1111,7 @@ function drawMap(mode) {
 
   viewport.querySelectorAll(".map-node").forEach((g) => {
     let moved = false, connectFrom = null, tempLine = null, active = false;
+    let branchMembers = null, branchStart = null, dragStartPt = null;
 
     g.addEventListener("pointerdown", (e) => {
       if (e.target.closest(".map-node-chevron")) return;
@@ -1028,6 +1124,11 @@ function drawMap(mode) {
         tempLine = document.createElementNS("http://www.w3.org/2000/svg", "path");
         tempLine.setAttribute("class", "map-path map-path--drawing");
         viewport.appendChild(tempLine);
+      } else if (branchMode) {
+        const chapter = s.chapters.find((c) => c.id === g.dataset.id);
+        branchMembers = [chapter, ...collectDescendants(chapter, s.chapters)];
+        branchStart = branchMembers.map((c) => ({ id: c.id, x: c.x, y: c.y }));
+        dragStartPt = svgPoint(viewport, e.clientX, e.clientY);
       }
     });
 
@@ -1040,6 +1141,15 @@ function drawMap(mode) {
         const hover = findNodeNear(chapters, pt, connectFrom.id);
         viewport.querySelectorAll(".map-node--hover-target").forEach((n) => n.classList.remove("map-node--hover-target"));
         if (hover) viewport.querySelector(`.map-node[data-id="${hover.id}"]`)?.classList.add("map-node--hover-target");
+      } else if (branchMode && branchMembers) {
+        const dx = pt.x - dragStartPt.x, dy = pt.y - dragStartPt.y;
+        branchMembers.forEach((c, i) => {
+          c.x = branchStart[i].x + dx;
+          c.y = branchStart[i].y + dy;
+          const el = viewport.querySelector(`.map-node[data-id="${c.id}"]`);
+          if (el) el.setAttribute("transform", `translate(${c.x},${c.y})`);
+        });
+        redrawPaths(viewport, s, chapters, connectMode);
       } else {
         const chapter = s.chapters.find((c) => c.id === g.dataset.id);
         chapter.x = pt.x;
@@ -1072,6 +1182,15 @@ function drawMap(mode) {
           navigate(mode === "edit" ? `#/story/${s.id}/edit?chapter=${connectFrom.id}` : `#/story/${s.id}/read?chapter=${connectFrom.id}`);
         }
         connectFrom = null; tempLine = null;
+        return;
+      }
+      if (branchMode && branchMembers) {
+        if (moved) markDirty();
+        else {
+          const id = g.dataset.id;
+          navigate(mode === "edit" ? `#/story/${s.id}/edit?chapter=${id}` : `#/story/${s.id}/read?chapter=${id}`);
+        }
+        branchMembers = null; branchStart = null; dragStartPt = null;
         return;
       }
       if (moved) { markDirty(); }

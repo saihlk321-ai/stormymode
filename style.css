@@ -303,6 +303,19 @@ textarea, input, select {
   background: var(--paper);
 }
 
+.chapter-nav-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 4px;
+}
+.chapter-nav-pos {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+
 .field-label {
   font-family: var(--font-ui);
   font-size: 11px;
@@ -410,6 +423,8 @@ textarea, input, select {
   max-width: 640px;
   margin: 0 auto;
 }
+.reader-back-row { margin-bottom: 12px; }
+
 .reader-eyebrow {
   font-family: var(--font-mono);
   font-size: 11px;
@@ -433,8 +448,9 @@ textarea, input, select {
   white-space: pre-wrap;
 }
 .reader-token {
-  color: var(--ink);
+  color: var(--teal-dark);
   font-weight: 600;
+  border-bottom: 1px dotted var(--teal);
 }
 
 .reader-nav {
@@ -560,12 +576,13 @@ textarea, input, select {
   border: none;
   background: transparent;
   color: var(--ink-soft);
-  padding: 8px 13px;
-  font-size: 12.5px;
+  padding: 7px 10px;
+  font-size: 11.5px;
   font-weight: 600;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
+  white-space: nowrap;
 }
 .map-seg__btn svg { width: 14px; height: 14px; }
 .map-seg__btn--active { background: var(--plum); color: var(--paper); }
@@ -816,14 +833,19 @@ textarea, input, select {
   font-size: 10px;
   color: var(--ink-faint);
 }
-.char-del {
+.char-icon-btn {
   border: none;
   background: transparent;
   color: var(--ink-faint);
   width: 28px; height: 28px;
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
-.char-del:active { color: var(--danger); }
+.char-icon-btn svg { width: 16px; height: 16px; }
+.char-icon-btn[data-tokenize]:active { color: var(--plum); }
+.char-icon-btn[data-id]:active { color: var(--danger); }
 
 .drawer__footer {
   padding: 12px 16px max(12px, env(safe-area-inset-bottom));
