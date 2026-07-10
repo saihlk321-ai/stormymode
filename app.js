@@ -19,6 +19,13 @@ const ICON = {
   arrow: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>`,
   x: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6L6 18"/></svg>`,
   book: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5C4 4.7 4.7 4 5.5 4H12v16H5.5A1.5 1.5 0 014 18.5v-13z"/><path d="M20 5.5c0-.8-.7-1.5-1.5-1.5H12v16h6.5A1.5 1.5 0 0020 18.5v-13z"/></svg>`,
+  sun: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4.5"/><path d="M12 2.5v2.5M12 19v2.5M4.6 4.6l1.8 1.8M17.6 17.6l1.8 1.8M2.5 12h2.5M19 12h2.5M4.6 19.4l1.8-1.8M17.6 6.4l1.8-1.8"/></svg>`,
+  moon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8.5 8.5 0 119.5 4a7 7 0 0010.5 10.5z"/></svg>`,
+  move: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18M6 7l-3 5 3 5M18 7l3 5-3 5M7 6l5-3 5 3M7 18l5 3 5-3"/></svg>`,
+  link: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="M8.2 8.2l7.6 7.6"/></svg>`,
+  minus: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/></svg>`,
+  frame: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>`,
+  chevronDown: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>`,
 };
 
 /* ---------- utils ---------- */
@@ -112,7 +119,7 @@ async function dbDelete(id) {
 
 /* ---------- model factories ---------- */
 function makeChapter(title, x, y) {
-  return { id: uid(), title: title || "Untitled chapter", text: "", x, y, choices: [] };
+  return { id: uid(), title: title || "Untitled chapter", text: "", x, y, choices: [], collapsed: false };
 }
 function makeStory(title, type) {
   const now = Date.now();
@@ -133,6 +140,29 @@ function makeStory(title, type) {
 const state = { current: null, drawerOpen: false, saveTimer: null };
 const app = document.getElementById("app");
 
+/* ---------- theme (light / dark) ---------- */
+function currentTheme() {
+  return document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+}
+function applyTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  try { localStorage.setItem("waypoint-theme", theme); } catch (e) {}
+}
+function toggleTheme() {
+  applyTheme(currentTheme() === "dark" ? "light" : "dark");
+  document.querySelectorAll(".theme-toggle").forEach(paintThemeButton);
+}
+function paintThemeButton(btn) {
+  btn.innerHTML = currentTheme() === "dark" ? ICON.sun : ICON.moon;
+  btn.title = currentTheme() === "dark" ? "Switch to light mode" : "Switch to dark mode";
+}
+function wireThemeButton(btn) {
+  if (!btn) return;
+  btn.classList.add("theme-toggle");
+  paintThemeButton(btn);
+  btn.onclick = toggleTheme;
+}
+
 function toast(msg) {
   let el = document.querySelector(".toast");
   if (!el) { el = document.createElement("div"); el.className = "toast"; document.body.appendChild(el); }
@@ -147,12 +177,12 @@ const scheduleSave = debounce(async () => {
   state.current.updatedAt = Date.now();
   await dbPut(state.current);
   const ind = document.querySelector(".save-indicator");
-  if (ind) ind.innerHTML = `<i></i> saved`;
+  if (ind) { ind.innerHTML = `<i></i>`; ind.title = "saved"; }
 }, 450);
 
 function markDirty() {
   const ind = document.querySelector(".save-indicator");
-  if (ind) ind.innerHTML = `<i style="background:var(--gold)"></i> saving…`;
+  if (ind) { ind.innerHTML = `<i style="background:var(--gold)"></i>`; ind.title = "saving…"; }
   scheduleSave();
 }
 
@@ -194,6 +224,7 @@ function normalizeStory(s) {
     if (typeof c.x !== "number") c.x = 120 + (i % 4) * 150;
     if (typeof c.y !== "number") c.y = 120 + Math.floor(i / 4) * 150;
     c.choices = c.choices || [];
+    c.collapsed = !!c.collapsed;
   });
 }
 
@@ -204,6 +235,7 @@ async function renderLibrary() {
     <div class="topbar">
       <div class="topbar__title">Waypoint</div>
       <div class="topbar__actions">
+        <button class="topbar__icon-btn" id="btnTheme" title="Toggle theme"></button>
         <button class="topbar__icon-btn" id="btnImport" title="Import story">${ICON.upload}</button>
       </div>
     </div>
@@ -223,6 +255,7 @@ async function renderLibrary() {
     <input type="file" id="importFile" accept="application/json" style="display:none">
   `;
   document.getElementById("btnNew").onclick = () => openNewStoryModal();
+  wireThemeButton(document.getElementById("btnTheme"));
   document.getElementById("btnImport").onclick = () => document.getElementById("importFile").click();
   document.getElementById("importFile").onchange = handleImportFile;
   app.querySelectorAll("[data-open]").forEach((el) => el.addEventListener("click", () => navigate(`#/story/${el.dataset.open}/read`)));
@@ -413,7 +446,8 @@ function renderEditor(activeChapterId) {
       <button class="topbar__icon-btn" id="btnBack">${ICON.back}</button>
       <input class="topbar__title topbar__title--editable" id="titleInput" value="${escapeHtml(s.title)}">
       <div class="topbar__actions">
-        <span class="save-indicator"><i></i> saved</span>
+        <span class="save-indicator" title="saved"><i></i></span>
+        <button class="topbar__icon-btn" id="btnTheme" title="Toggle theme"></button>
         <button class="topbar__icon-btn" id="btnChars" title="Characters">${ICON.people}</button>
         <button class="topbar__icon-btn" id="btnMap" title="Story map">${ICON.map}</button>
         <button class="topbar__icon-btn" id="btnExport" title="Export as file">${ICON.download}</button>
@@ -428,6 +462,7 @@ function renderEditor(activeChapterId) {
 
   document.getElementById("btnBack").onclick = () => navigate("#/");
   document.getElementById("titleInput").addEventListener("input", (e) => { s.title = e.target.value; markDirty(); });
+  wireThemeButton(document.getElementById("btnTheme"));
   document.getElementById("btnChars").onclick = openDrawer;
   document.getElementById("btnMap").onclick = () => navigate(`#/story/${s.id}/map?mode=edit`);
   document.getElementById("btnExport").onclick = () => downloadStoryFile(s);
@@ -613,6 +648,7 @@ function renderReader(chapterId) {
       <button class="topbar__icon-btn" id="btnBack">${ICON.back}</button>
       <div class="topbar__title">${escapeHtml(s.title)}</div>
       <div class="topbar__actions">
+        <button class="topbar__icon-btn" id="btnTheme" title="Toggle theme"></button>
         <button class="topbar__icon-btn" id="btnChars" title="Characters">${ICON.people}</button>
         <button class="topbar__icon-btn" id="btnMap" title="Story map">${ICON.map}</button>
       </div>
@@ -620,6 +656,7 @@ function renderReader(chapterId) {
     <div class="reader-wrap"><div class="reader-page" id="readerPage"></div></div>`;
 
   document.getElementById("btnBack").onclick = () => navigate("#/");
+  wireThemeButton(document.getElementById("btnTheme"));
   document.getElementById("btnChars").onclick = openDrawer;
   document.getElementById("btnMap").onclick = () => navigate(`#/story/${s.id}/map?mode=read`);
 
@@ -671,114 +708,429 @@ function renderReaderBody(chapterId) {
 /* ================= MAP ================= */
 function renderMap(mode) {
   const s = state.current;
+  const editable = mode === "edit";
+  state.mapMode = "move"; // move | connect — only meaningful for CYOA editing
   app.innerHTML = `
     <div class="topbar">
       <button class="topbar__icon-btn" id="btnBack">${ICON.back}</button>
       <div class="topbar__title">${escapeHtml(s.title)} · map</div>
       <div class="topbar__actions">
+        <button class="topbar__icon-btn" id="btnTheme" title="Toggle theme"></button>
         <button class="topbar__icon-btn" id="btnChars" title="Characters">${ICON.people}</button>
       </div>
     </div>
+    ${editable ? `
+      <div class="map-toolbar">
+        ${s.type === "cyoa" ? `
+          <div class="map-seg">
+            <button class="map-seg__btn map-seg__btn--active" data-mmode="move" title="Drag waypoints to reposition them">${ICON.move} Move</button>
+            <button class="map-seg__btn" data-mmode="connect" title="Drag between waypoints to add a path">${ICON.link} Connect</button>
+          </div>` : ""}
+        <button class="btn btn--sm btn--primary" id="btnAddChapter">${ICON.plus} Chapter</button>
+      </div>` : ""}
     <div class="map-wrap" id="mapWrap">
-      <svg class="map-svg" id="mapSvg" xmlns="http://www.w3.org/2000/svg"></svg>
-      <div class="map-legend">
-        ${s.type === "cyoa"
-          ? `<span><i style="background:var(--paper-dark);border:2px solid var(--teal)"></i> chapter</span><span><i style="background:var(--paper-dark);border:2px solid var(--gold)"></i> ending</span><span>tap a waypoint to jump</span>`
-          : `<span><i style="background:var(--teal)"></i> reading order</span><span>drag to rearrange · tap to jump</span>`}
+      <svg class="map-svg" id="mapSvg" xmlns="http://www.w3.org/2000/svg">
+        <rect class="map-bg-catcher" x="0" y="0" width="100%" height="100%" fill="none" pointer-events="all"></rect>
+        <g id="mapViewport"></g>
+      </svg>
+      <div class="map-controls">
+        <button id="btnZoomIn" title="Zoom in">${ICON.plus}</button>
+        <button id="btnZoomOut" title="Zoom out">${ICON.minus}</button>
+        <button id="btnFit" title="Fit to screen">${ICON.frame}</button>
       </div>
+      <div class="map-legend" id="mapLegend"></div>
     </div>`;
   document.getElementById("btnBack").onclick = () => navigate(mode === "edit" ? `#/story/${s.id}/edit` : `#/story/${s.id}/read`);
   document.getElementById("btnChars").onclick = openDrawer;
-  drawMap(mode);
+  wireThemeButton(document.getElementById("btnTheme"));
+
+  if (editable) {
+    document.getElementById("btnAddChapter").onclick = () => addChapterFromMap();
+    const seg = document.querySelectorAll(".map-seg__btn");
+    seg.forEach((btn) => btn.addEventListener("click", () => {
+      state.mapMode = btn.dataset.mmode;
+      seg.forEach((b) => b.classList.toggle("map-seg__btn--active", b === btn));
+      updateMapLegend(mode);
+      drawMap(mode);
+    }));
+  }
+  updateMapLegend(mode);
+  initMapView(mode);
 }
 
-function drawMap(mode) {
+function updateMapLegend(mode) {
+  const s = state.current;
+  const legend = document.getElementById("mapLegend");
+  if (!legend) return;
+  if (s.type === "cyoa") {
+    if (mode === "edit" && state.mapMode === "connect") {
+      legend.innerHTML = `<span>drag from one waypoint to another to add a path</span><span>tap a path to remove it</span>`;
+    } else if (mode === "edit") {
+      legend.innerHTML = `<span><i style="background:var(--paper-dark);border:2px solid var(--teal)"></i> chapter</span><span><i style="background:var(--paper-dark);border:2px solid var(--gold)"></i> ending</span><span>pinch/scroll to zoom · drag to pan</span>`;
+    } else {
+      legend.innerHTML = `<span><i style="background:var(--paper-dark);border:2px solid var(--teal)"></i> chapter</span><span><i style="background:var(--paper-dark);border:2px solid var(--gold)"></i> ending</span><span>tap – to collapse a branch</span>`;
+    }
+  } else {
+    legend.innerHTML = `<span><i style="background:var(--teal)"></i> reading order</span><span>pinch/scroll to zoom · drag to pan</span>`;
+  }
+}
+
+function addChapterFromMap() {
+  const s = state.current;
+  const title = prompt("Chapter title:", `Chapter ${s.chapters.length + 1}`);
+  if (title === null) return;
+  const maxX = Math.max(140, ...s.chapters.map((c) => c.x));
+  const c = makeChapter(title.trim() || `Chapter ${s.chapters.length + 1}`, maxX + 150, 140);
+  s.chapters.push(c);
+  markDirty();
+  drawMap("edit");
+  state.mapHelpers?.fitToContent();
+}
+
+function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+
+/* -- which chapters a collapsed branch is hiding -- */
+function computeHiddenSet(chapters) {
+  const byId = Object.fromEntries(chapters.map((c) => [c.id, c]));
+  const hidden = new Set();
+  const hiddenCount = {};
+  chapters.forEach((c) => {
+    if (!c.collapsed) return;
+    const queue = (c.choices || []).map((ch) => ch.targetId).filter(Boolean);
+    const seen = new Set();
+    while (queue.length) {
+      const id = queue.shift();
+      if (!id || id === c.id || seen.has(id)) continue;
+      seen.add(id);
+      hidden.add(id);
+      const child = byId[id];
+      if (child) (child.choices || []).forEach((ch) => { if (ch.targetId) queue.push(ch.targetId); });
+    }
+    hiddenCount[c.id] = seen.size;
+  });
+  return { hidden, hiddenCount };
+}
+
+/* -- pan & zoom wiring, lives on the outer svg / background -- */
+function initMapView(mode) {
   const s = state.current;
   const svg = document.getElementById("mapSvg");
-  const chapters = s.chapters;
-  const maxX = Math.max(300, ...chapters.map((c) => c.x + 120));
-  const maxY = Math.max(300, ...chapters.map((c) => c.y + 120));
-  svg.setAttribute("viewBox", `0 0 ${maxX} ${maxY}`);
+  const wrap = document.getElementById("mapWrap");
+  const viewport = document.getElementById("mapViewport");
 
+  state.mapView = { scale: 1, tx: 0, ty: 0 };
+
+  function sizeSvgToContainer() {
+    const rect = wrap.getBoundingClientRect();
+    svg.setAttribute("viewBox", `0 0 ${rect.width} ${rect.height}`);
+    return rect;
+  }
+
+  function applyTransform() {
+    viewport.setAttribute("transform", `translate(${state.mapView.tx},${state.mapView.ty}) scale(${state.mapView.scale})`);
+  }
+
+  function fitToContent() {
+    const hidden = s.type === "cyoa" ? computeHiddenSet(s.chapters).hidden : new Set();
+    const visible = s.chapters.filter((c) => !hidden.has(c.id));
+    if (visible.length === 0) return;
+    const xs = visible.map((c) => c.x), ys = visible.map((c) => c.y);
+    const minX = Math.min(...xs) - 70, maxX = Math.max(...xs) + 70;
+    const minY = Math.min(...ys) - 70, maxY = Math.max(...ys) + 70;
+    const w = Math.max(1, maxX - minX), h = Math.max(1, maxY - minY);
+    const rect = sizeSvgToContainer();
+    const scale = clamp(Math.min(rect.width / w, rect.height / h), 0.25, 1.3);
+    state.mapView.scale = scale;
+    state.mapView.tx = rect.width / 2 - ((minX + maxX) / 2) * scale;
+    state.mapView.ty = rect.height / 2 - ((minY + maxY) / 2) * scale;
+    applyTransform();
+  }
+
+  function zoomBy(factor) {
+    const rect = svg.getBoundingClientRect();
+    const cx = rect.width / 2, cy = rect.height / 2;
+    const worldX = (cx - state.mapView.tx) / state.mapView.scale;
+    const worldY = (cy - state.mapView.ty) / state.mapView.scale;
+    const newScale = clamp(state.mapView.scale * factor, 0.2, 3.5);
+    state.mapView.scale = newScale;
+    state.mapView.tx = cx - worldX * newScale;
+    state.mapView.ty = cy - worldY * newScale;
+    applyTransform();
+  }
+
+  state.mapHelpers = { applyTransform, fitToContent, sizeSvgToContainer };
+
+  drawMap(mode);
+  fitToContent();
+
+  const pointers = new Map();
+  let panStart = null, pinchStart = null;
+
+  svg.addEventListener("pointerdown", (e) => {
+    if (e.target.closest(".map-node")) return;
+    svg.setPointerCapture(e.pointerId);
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointers.size === 1) {
+      panStart = { x: e.clientX, y: e.clientY, tx: state.mapView.tx, ty: state.mapView.ty };
+    } else if (pointers.size === 2) {
+      const pts = [...pointers.values()];
+      pinchStart = {
+        dist: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y),
+        scale: state.mapView.scale,
+        mid: { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 },
+        tx: state.mapView.tx, ty: state.mapView.ty,
+      };
+      panStart = null;
+    }
+  });
+  svg.addEventListener("pointermove", (e) => {
+    if (!pointers.has(e.pointerId)) return;
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointers.size === 1 && panStart) {
+      state.mapView.tx = panStart.tx + (e.clientX - panStart.x);
+      state.mapView.ty = panStart.ty + (e.clientY - panStart.y);
+      applyTransform();
+    } else if (pointers.size === 2 && pinchStart) {
+      const pts = [...pointers.values()];
+      const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+      const ratio = dist / (pinchStart.dist || 1);
+      const newScale = clamp(pinchStart.scale * ratio, 0.2, 3.5);
+      const rect = svg.getBoundingClientRect();
+      const midX = pinchStart.mid.x - rect.left, midY = pinchStart.mid.y - rect.top;
+      const worldX = (midX - pinchStart.tx) / pinchStart.scale, worldY = (midY - pinchStart.ty) / pinchStart.scale;
+      state.mapView.scale = newScale;
+      state.mapView.tx = midX - worldX * newScale;
+      state.mapView.ty = midY - worldY * newScale;
+      applyTransform();
+    }
+  });
+  function endPointer(e) {
+    pointers.delete(e.pointerId);
+    if (pointers.size < 2) pinchStart = null;
+    if (pointers.size === 1) {
+      const [[, pt]] = pointers;
+      panStart = { x: pt.x, y: pt.y, tx: state.mapView.tx, ty: state.mapView.ty };
+    } else {
+      panStart = null;
+    }
+  }
+  svg.addEventListener("pointerup", endPointer);
+  svg.addEventListener("pointercancel", endPointer);
+
+  wrap.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const rect = svg.getBoundingClientRect();
+    const px = e.clientX - rect.left, py = e.clientY - rect.top;
+    const worldX = (px - state.mapView.tx) / state.mapView.scale;
+    const worldY = (py - state.mapView.ty) / state.mapView.scale;
+    const newScale = clamp(state.mapView.scale * Math.exp(-e.deltaY * 0.0015), 0.2, 3.5);
+    state.mapView.scale = newScale;
+    state.mapView.tx = px - worldX * newScale;
+    state.mapView.ty = py - worldY * newScale;
+    applyTransform();
+  }, { passive: false });
+
+  if (state.mapResizeHandler) window.removeEventListener("resize", state.mapResizeHandler);
+  state.mapResizeHandler = () => sizeSvgToContainer();
+  window.addEventListener("resize", state.mapResizeHandler, { passive: true });
+
+  document.getElementById("btnZoomIn").onclick = () => zoomBy(1.25);
+  document.getElementById("btnZoomOut").onclick = () => zoomBy(0.8);
+  document.getElementById("btnFit").onclick = () => fitToContent();
+}
+
+function pathData(a, b, bow) {
+  return `M${a.x},${a.y} Q${(a.x + b.x) / 2},${(a.y + b.y) / 2 - bow} ${b.x},${b.y}`;
+}
+function buildPathsHTML(s, chapters, connectMode) {
   let paths = "";
   if (s.type === "linear") {
     for (let i = 0; i < chapters.length - 1; i++) {
-      const a = chapters[i], b = chapters[i + 1];
-      paths += `<path class="map-path" d="M${a.x},${a.y} Q${(a.x + b.x) / 2},${(a.y + b.y) / 2 - 30} ${b.x},${b.y}"/>`;
+      paths += `<path class="map-path" d="${pathData(chapters[i], chapters[i + 1], 30)}"/>`;
     }
   } else {
     chapters.forEach((c) => {
       (c.choices || []).forEach((choice) => {
         const target = chapters.find((t) => t.id === choice.targetId);
         if (!target) return;
-        paths += `<path class="map-path map-path--cyoa" d="M${c.x},${c.y} Q${(c.x + target.x) / 2},${(c.y + target.y) / 2 - 26} ${target.x},${target.y}"/>`;
+        paths += `<path class="map-path map-path--cyoa" d="${pathData(c, target, 26)}"/>`;
+        if (connectMode) {
+          paths += `<path class="map-path-hit" data-from="${c.id}" data-to="${target.id}" data-choice="${choice.id}" d="${pathData(c, target, 26)}"/>`;
+        }
       });
     });
   }
+  return paths;
+}
+function redrawPaths(viewport, s, chapters, connectMode) {
+  viewport.querySelectorAll(".map-path, .map-path-hit").forEach((p) => p.remove());
+  viewport.insertAdjacentHTML("afterbegin", buildPathsHTML(s, chapters, connectMode));
+  wirePathDeletion(viewport, s, mode_ref.current);
+}
+let mode_ref = { current: "read" };
+
+function drawMap(mode) {
+  mode_ref.current = mode;
+  const s = state.current;
+  const viewport = document.getElementById("mapViewport");
+  if (!viewport) return;
+  const connectMode = mode === "edit" && s.type === "cyoa" && state.mapMode === "connect";
+
+  const { hidden, hiddenCount } = s.type === "cyoa" ? computeHiddenSet(s.chapters) : { hidden: new Set(), hiddenCount: {} };
+  const chapters = s.chapters.filter((c) => !hidden.has(c.id));
+
+  const childCount = {};
+  s.chapters.forEach((c) => (c.choices || []).forEach((ch) => {
+    if (ch.targetId) childCount[c.id] = (childCount[c.id] || 0) + 1;
+  }));
 
   const activeId = s.lastReadChapterId;
-  const nodes = chapters.map((c, i) => {
+  const nodes = chapters.map((c) => {
+    const i = s.chapters.indexOf(c);
     const isEnding = s.type === "cyoa" && (c.choices || []).length === 0;
+    const hasChildren = s.type === "cyoa" && (childCount[c.id] || 0) > 0;
+    let extras = "";
+    if (hasChildren) {
+      extras += `<g class="map-node-chevron" data-toggle="${c.id}" transform="translate(-22,-14)">
+        <circle r="9"></circle>
+        <text x="0" y="3.5" text-anchor="middle">${c.collapsed ? "+" : "–"}</text>
+      </g>`;
+    }
+    if (c.collapsed && hiddenCount[c.id]) {
+      extras += `<g class="map-node-badge" transform="translate(18,-16)">
+        <circle r="8"></circle>
+        <text x="0" y="3" text-anchor="middle">${hiddenCount[c.id]}</text>
+      </g>`;
+    }
     return `<g class="map-node ${c.id === activeId ? "map-node--active" : ""} ${isEnding ? "map-node--cyoa-end" : ""}" data-id="${c.id}" transform="translate(${c.x},${c.y})">
       <circle class="pin" r="18"></circle>
       <text class="num" x="0" y="5" text-anchor="middle">${i + 1}</text>
       <text class="label" x="0" y="34" text-anchor="middle">${escapeHtml(truncate(c.title, 14))}</text>
+      ${extras}
     </g>`;
   }).join("");
 
-  svg.innerHTML = paths + nodes;
+  viewport.innerHTML = buildPathsHTML(s, chapters, connectMode) + nodes;
+  wirePathDeletion(viewport, s, mode);
+  wireChevrons(viewport, s, mode);
 
-  let dragging = null, moved = false;
-  svg.querySelectorAll(".map-node").forEach((g) => {
+  viewport.querySelectorAll(".map-node").forEach((g) => {
+    let moved = false, connectFrom = null, tempLine = null, active = false;
+
     g.addEventListener("pointerdown", (e) => {
-      dragging = g; moved = false;
+      if (e.target.closest(".map-node-chevron")) return;
+      e.stopPropagation();
+      active = true; moved = false;
       g.setPointerCapture(e.pointerId);
+      g.classList.add("dragging");
+      if (connectMode) {
+        connectFrom = chapters.find((c) => c.id === g.dataset.id);
+        tempLine = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        tempLine.setAttribute("class", "map-path map-path--drawing");
+        viewport.appendChild(tempLine);
+      }
+    });
+
+    g.addEventListener("pointermove", (e) => {
+      if (!active) return;
+      moved = true;
+      const pt = svgPoint(viewport, e.clientX, e.clientY);
+      if (connectMode && connectFrom) {
+        tempLine.setAttribute("d", pathData(connectFrom, { x: pt.x, y: pt.y }, 26));
+        const hover = findNodeNear(chapters, pt, connectFrom.id);
+        viewport.querySelectorAll(".map-node--hover-target").forEach((n) => n.classList.remove("map-node--hover-target"));
+        if (hover) viewport.querySelector(`.map-node[data-id="${hover.id}"]`)?.classList.add("map-node--hover-target");
+      } else {
+        const chapter = s.chapters.find((c) => c.id === g.dataset.id);
+        chapter.x = pt.x;
+        chapter.y = pt.y;
+        g.setAttribute("transform", `translate(${chapter.x},${chapter.y})`);
+        redrawPaths(viewport, s, chapters, connectMode);
+      }
+    });
+
+    g.addEventListener("pointerup", (e) => {
+      if (!active) return;
+      active = false;
+      g.classList.remove("dragging");
+      g.releasePointerCapture(e.pointerId);
+
+      if (connectMode && connectFrom) {
+        const pt = svgPoint(viewport, e.clientX, e.clientY);
+        const target = moved ? findNodeNear(chapters, pt, connectFrom.id) : null;
+        tempLine?.remove();
+        viewport.querySelectorAll(".map-node--hover-target").forEach((n) => n.classList.remove("map-node--hover-target"));
+        if (target) {
+          const text = prompt("Choice text (what the reader taps):", "Continue");
+          if (text !== null) {
+            connectFrom.choices = connectFrom.choices || [];
+            connectFrom.choices.push({ id: uid(), text: text.trim() || "Continue", targetId: target.id });
+            markDirty();
+            drawMap(mode);
+          }
+        } else if (!moved) {
+          navigate(mode === "edit" ? `#/story/${s.id}/edit?chapter=${connectFrom.id}` : `#/story/${s.id}/read?chapter=${connectFrom.id}`);
+        }
+        connectFrom = null; tempLine = null;
+        return;
+      }
+      if (moved) { markDirty(); }
+      else {
+        const id = g.dataset.id;
+        navigate(mode === "edit" ? `#/story/${s.id}/edit?chapter=${id}` : `#/story/${s.id}/read?chapter=${id}`);
+      }
     });
   });
-  svg.addEventListener("pointermove", (e) => {
-    if (!dragging) return;
-    moved = true;
-    const pt = svgPoint(svg, e.clientX, e.clientY);
-    const chapter = chapters.find((c) => c.id === dragging.dataset.id);
-    chapter.x = Math.max(30, pt.x);
-    chapter.y = Math.max(30, pt.y);
-    dragging.setAttribute("transform", `translate(${chapter.x},${chapter.y})`);
-    redrawPaths(svg, s, chapters);
-  });
-  svg.addEventListener("pointerup", () => {
-    if (dragging && moved) { markDirty(); }
-    else if (dragging && !moved) {
-      const id = dragging.dataset.id;
-      navigate(mode === "edit" ? `#/story/${s.id}/edit?chapter=${id}` : `#/story/${s.id}/read?chapter=${id}`);
-    }
-    dragging = null;
+}
+
+function wireChevrons(viewport, s, mode) {
+  viewport.querySelectorAll(".map-node-chevron").forEach((chev) => {
+    chev.addEventListener("pointerdown", (e) => e.stopPropagation());
+    chev.addEventListener("pointerup", (e) => e.stopPropagation());
+    chev.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const chapter = s.chapters.find((c) => c.id === chev.dataset.toggle);
+      if (!chapter) return;
+      chapter.collapsed = !chapter.collapsed;
+      markDirty();
+      drawMap(mode);
+    });
   });
 }
+
+function findNodeNear(chapters, pt, excludeId) {
+  const R = 26;
+  let best = null, bestDist = R;
+  chapters.forEach((c) => {
+    if (c.id === excludeId) return;
+    const d = Math.hypot(c.x - pt.x, c.y - pt.y);
+    if (d < bestDist) { bestDist = d; best = c; }
+  });
+  return best;
+}
+
+function wirePathDeletion(viewport, s, mode) {
+  viewport.querySelectorAll(".map-path-hit").forEach((hit) => {
+    hit.addEventListener("pointerdown", (e) => e.stopPropagation());
+    hit.addEventListener("pointerup", (e) => {
+      e.stopPropagation();
+      const from = s.chapters.find((c) => c.id === hit.dataset.from);
+      if (!from) return;
+      if (!confirm("Remove this path?")) return;
+      from.choices = (from.choices || []).filter((ch) => ch.id !== hit.dataset.choice);
+      markDirty();
+      drawMap(mode);
+    });
+  });
+}
+
 function truncate(str, n) { return (str || "").length > n ? str.slice(0, n - 1) + "…" : (str || ""); }
-function svgPoint(svg, cx, cy) {
-  const pt = svg.createSVGPoint();
+function svgPoint(el, cx, cy) {
+  const root = el.ownerSVGElement || el;
+  const pt = root.createSVGPoint();
   pt.x = cx; pt.y = cy;
-  const ctm = svg.getScreenCTM().inverse();
+  const ctm = el.getScreenCTM().inverse();
   return pt.matrixTransform(ctm);
-}
-function redrawPaths(svg, s, chapters) {
-  let paths = "";
-  if (s.type === "linear") {
-    for (let i = 0; i < chapters.length - 1; i++) {
-      const a = chapters[i], b = chapters[i + 1];
-      paths += `<path class="map-path" d="M${a.x},${a.y} Q${(a.x + b.x) / 2},${(a.y + b.y) / 2 - 30} ${b.x},${b.y}"/>`;
-    }
-  } else {
-    chapters.forEach((c) => {
-      (c.choices || []).forEach((choice) => {
-        const target = chapters.find((t) => t.id === choice.targetId);
-        if (!target) return;
-        paths += `<path class="map-path map-path--cyoa" d="M${c.x},${c.y} Q${(c.x + target.x) / 2},${(c.y + target.y) / 2 - 26} ${target.x},${target.y}"/>`;
-      });
-    });
-  }
-  svg.querySelectorAll(".map-path").forEach((p) => p.remove());
-  svg.insertAdjacentHTML("afterbegin", paths);
 }
 
 /* ---------- init ---------- */
