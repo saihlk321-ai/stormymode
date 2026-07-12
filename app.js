@@ -1257,8 +1257,21 @@ function init() {
   route();
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("./sw.js").catch(() => {});
+      navigator.serviceWorker.register("./sw.js")
+        .then(() => navigator.serviceWorker.ready)
+        .then(() => {
+          const seen = localStorage.getItem("waypoint-offline-ready");
+          if (!seen) {
+            localStorage.setItem("waypoint-offline-ready", "1");
+            toast("Ready to use offline");
+          }
+        })
+        .catch((err) => {
+          console.warn("[waypoint] service worker registration failed — offline mode won't work:", err);
+        });
     });
+  } else {
+    console.warn("[waypoint] this browser has no service worker support — offline mode won't work.");
   }
 }
 init();
