@@ -28,6 +28,7 @@ const ICON = {
   chevronDown: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>`,
   wand: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20L15 9"/><path d="M17 3l.9 1.9L20 5.8l-2.1.9L17 8.6l-.9-1.9L14 5.8l2.1-.9L17 3z"/><path d="M18.5 13.5l.6 1.3 1.3.6-1.3.6-.6 1.3-.6-1.3-1.3-.6 1.3-.6.6-1.3z"/></svg>`,
   branch: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2.3"/><circle cx="6" cy="19" r="2.3"/><circle cx="18" cy="12" r="2.3"/><path d="M6 7.3V16.7M6 10c0 3 3 2 5.5 2H14"/></svg>`,
+  image: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="M20 15.5l-5-4.5-3.5 3-2-1.5L4 16"/></svg>`,
 };
 
 /* ---------- utils ---------- */
@@ -55,15 +56,31 @@ function resolveCharacterToken(raw, chars) {
          chars.find((c) => (c.name || "").trim().toLowerCase() === key) ||
          null;
 }
+function resolveMediaToken(raw, media) {
+  const key = raw.trim().toLowerCase();
+  if (!key) return null;
+  return media.find((m) => m.id.toLowerCase() === key) ||
+         media.find((m) => (m.name || "").trim().toLowerCase() === key) ||
+         null;
+}
 function renderTokensHTML(text, story) {
   const chars = story.characters || [];
+  const media = story.media || [];
   const src = text || "";
   const re = tokenRegex();
   let out = "", lastIndex = 0, m;
   while ((m = re.exec(src))) {
     out += escapeHtml(src.slice(lastIndex, m.index));
-    const c = resolveCharacterToken(m[1], chars);
-    out += c ? `<span class="reader-token">${escapeHtml(c.name)}</span>` : `<span class="reader-token">[deleted]</span>`;
+    const raw = m[1];
+    if (/^img:/i.test(raw.trim())) {
+      const item = resolveMediaToken(raw.trim().slice(4), media);
+      out += item
+        ? `<span class="reader-image-block"><img class="reader-image" src="${item.dataUrl}" alt="${escapeHtml(item.name)}" loading="lazy"></span>`
+        : `<span class="reader-token">[image missing]</span>`;
+    } else {
+      const c = resolveCharacterToken(raw, chars);
+      out += c ? `<span class="reader-token">${escapeHtml(c.name)}</span>` : `<span class="reader-token">[deleted]</span>`;
+    }
     lastIndex = re.lastIndex;
   }
   out += escapeHtml(src.slice(lastIndex));
@@ -134,12 +151,13 @@ function makeStory(title, type) {
     updatedAt: now,
     lastReadChapterId: ch.id,
     characters: [],
+    media: [],
     chapters: [ch],
   };
 }
 
 /* ---------- app state ---------- */
-const state = { current: null, drawerOpen: false, saveTimer: null };
+const state = { current: null, drawerOpen: false, drawerTab: "characters", saveTimer: null };
 const app = document.getElementById("app");
 let readerHistory = [];
 
@@ -223,6 +241,7 @@ async function route() {
 
 function normalizeStory(s) {
   s.characters = s.characters || [];
+  s.media = s.media || [];
   s.chapters = s.chapters || [];
   s.chapters.forEach((c, i) => {
     if (typeof c.x !== "number") c.x = 120 + (i % 4) * 150;
@@ -356,7 +375,7 @@ async function handleImportFile(e) {
   e.target.value = "";
 }
 
-/* ================= DRAWER (characters) ================= */
+/* ================= DRAWER (characters + images) ================= */
 function ensureDrawerShell() {
   if (document.querySelector(".drawer")) return;
   const scrim = document.createElement("div");
@@ -367,9 +386,10 @@ function ensureDrawerShell() {
   document.body.appendChild(scrim);
   document.body.appendChild(drawer);
 }
-function openDrawer() {
+function openDrawer(tab) {
   ensureDrawerShell();
   state.drawerOpen = true;
+  state.drawerTab = tab || state.drawerTab || "characters";
   renderDrawer();
   document.querySelector(".drawer-scrim").classList.add("drawer-scrim--open");
   document.querySelector(".drawer").classList.add("drawer--open");
@@ -383,16 +403,29 @@ function closeDrawer() {
 function renderDrawer() {
   const s = state.current;
   const drawer = document.querySelector(".drawer");
+  const tab = state.drawerTab;
   drawer.innerHTML = `
     <div class="drawer__header">
-      <h3>${ICON.people} Characters</h3>
-      <p>Rename anyone — every mention updates across the whole story.</p>
+      <div class="drawer__tabs">
+        <button class="drawer__tab ${tab === "characters" ? "drawer__tab--active" : ""}" data-tab="characters">${ICON.people} Characters</button>
+        <button class="drawer__tab ${tab === "images" ? "drawer__tab--active" : ""}" data-tab="images">${ICON.image} Images</button>
+      </div>
+      <p>${tab === "characters" ? "Rename anyone — every mention updates across the whole story." : "Add pictures or GIFs, then insert them into any chapter."}</p>
     </div>
-    <div class="drawer__body" id="charList"></div>
+    <div class="drawer__body" id="drawerBody"></div>
     <div class="drawer__footer">
-      <button class="btn btn--block" id="addChar">${ICON.plus} Add character</button>
+      ${tab === "characters"
+        ? `<button class="btn btn--block" id="addChar">${ICON.plus} Add character</button>`
+        : `<button class="btn btn--block" id="addMedia">${ICON.plus} Add image or GIF</button><input type="file" id="mediaFile" accept="image/*" style="display:none">`}
     </div>`;
-  const list = drawer.querySelector("#charList");
+  drawer.querySelectorAll(".drawer__tab").forEach((btn) => {
+    btn.addEventListener("click", () => { state.drawerTab = btn.dataset.tab; renderDrawer(); });
+  });
+  if (tab === "characters") renderCharacterTab(drawer, s); else renderMediaTab(drawer, s);
+}
+
+function renderCharacterTab(drawer, s) {
+  const list = drawer.querySelector("#drawerBody");
   if (s.characters.length === 0) {
     list.innerHTML = `<p style="color:var(--ink-soft);font-size:13px;">No characters yet. Add one, then insert their name into chapter text from the editor toolbar.</p>`;
   } else {
@@ -441,6 +474,99 @@ function renderDrawer() {
     renderDrawer();
     refreshUnderlyingTextIfVisible();
   };
+}
+
+function renderMediaTab(drawer, s) {
+  const list = drawer.querySelector("#drawerBody");
+  if (s.media.length === 0) {
+    list.innerHTML = `<p style="color:var(--ink-soft);font-size:13px;">No images yet. Add one below, then drop it into any chapter from the editor toolbar — just like a character's name.</p>`;
+  } else {
+    list.innerHTML = "";
+    s.media.forEach((mItem) => {
+      const row = document.createElement("div");
+      row.className = "media-row";
+      row.innerHTML = `
+        <img class="media-thumb" src="${mItem.dataUrl}" alt="${escapeHtml(mItem.name)}">
+        <div class="char-fields">
+          <input class="char-name-input" value="${escapeHtml(mItem.name)}" data-id="${mItem.id}">
+          <div class="char-tag">{{img:${mItem.id}}}</div>
+        </div>
+        <button class="char-icon-btn" data-id="${mItem.id}" title="Remove image">${ICON.x}</button>`;
+      list.appendChild(row);
+    });
+  }
+  list.querySelectorAll(".char-name-input").forEach((inp) => {
+    inp.addEventListener("input", () => {
+      const m = s.media.find((x) => x.id === inp.dataset.id);
+      if (m) { m.name = inp.value; markDirty(); }
+    });
+  });
+  list.querySelectorAll(".char-icon-btn[data-id]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      if (!confirm("Remove this image? Any spot it's used in the story will show as missing.")) return;
+      s.media = s.media.filter((x) => x.id !== btn.dataset.id);
+      markDirty();
+      renderDrawer();
+      refreshUnderlyingTextIfVisible();
+    });
+  });
+  const fileInput = drawer.querySelector("#mediaFile");
+  drawer.querySelector("#addMedia").onclick = () => fileInput.click();
+  fileInput.onchange = () => handleAddMedia(fileInput.files[0], () => { fileInput.value = ""; });
+}
+
+/* store an uploaded image/GIF as a self-contained data URL on the story;
+   static images are downscaled to keep story files small, GIFs are kept
+   as-is so their animation isn't destroyed by re-encoding */
+function handleAddMedia(file, done) {
+  if (!file) { done && done(); return; }
+  const s = state.current;
+  const finish = (dataUrl) => {
+    const defaultName = file.name.replace(/\.[a-z0-9]+$/i, "").slice(0, 40) || "image";
+    const name = prompt("Name this image (used to find it later):", defaultName);
+    if (name === null) { done && done(); return; }
+    const id = slugify(name || defaultName, s.media.map((m) => m.id));
+    s.media.push({ id, name: (name || defaultName).trim(), dataUrl });
+    markDirty();
+    renderDrawer();
+    refreshUnderlyingTextIfVisible();
+    done && done();
+  };
+
+  if (file.type === "image/gif") {
+    if (file.size > 5 * 1024 * 1024) {
+      toast("That GIF is quite large — it may slow down saving and exporting");
+    }
+    const reader = new FileReader();
+    reader.onload = () => finish(reader.result);
+    reader.readAsDataURL(file);
+    return;
+  }
+
+  const img = new Image();
+  const reader = new FileReader();
+  reader.onload = () => {
+    img.onload = () => {
+      const maxDim = 1600;
+      let { width, height } = img;
+      if (width > maxDim || height > maxDim) {
+        const ratio = Math.min(maxDim / width, maxDim / height);
+        width = Math.round(width * ratio);
+        height = Math.round(height * ratio);
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = width; canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, width, height);
+      const isPng = file.type === "image/png";
+      const dataUrl = canvas.toDataURL(isPng ? "image/png" : "image/jpeg", 0.85);
+      finish(dataUrl);
+    };
+    img.onerror = () => { toast("Couldn't read that image"); done && done(); };
+    img.src = reader.result;
+  };
+  reader.onerror = () => { toast("Couldn't read that image"); done && done(); };
+  reader.readAsDataURL(file);
 }
 
 /* find-and-replace a plain word/phrase into a character token, across every chapter */
@@ -514,7 +640,7 @@ function renderEditor(activeChapterId) {
   document.getElementById("btnBack").onclick = () => navigate("#/");
   document.getElementById("titleInput").addEventListener("input", (e) => { s.title = e.target.value; markDirty(); });
   wireThemeButton(document.getElementById("btnTheme"));
-  document.getElementById("btnChars").onclick = openDrawer;
+  document.getElementById("btnChars").onclick = () => openDrawer("characters");
   document.getElementById("btnMap").onclick = () => navigate(`#/story/${s.id}/map?mode=edit`);
   document.getElementById("btnExport").onclick = () => downloadStoryFile(s);
 
@@ -558,6 +684,9 @@ function renderManuscript(chapter) {
     <label class="field-label">Insert a character name</label>
     <div class="token-toolbar" id="tokenToolbar"></div>
 
+    <label class="field-label">Insert an image or GIF</label>
+    <div class="token-toolbar" id="mediaToolbar"></div>
+
     <label class="field-label">Chapter text</label>
     <textarea class="manuscript-textarea" id="chText" placeholder="Once upon a time…">${escapeHtml(chapter.text)}</textarea>
 
@@ -585,6 +714,7 @@ function renderManuscript(chapter) {
   textarea.addEventListener("input", (e) => { chapter.text = e.target.value; markDirty(); });
 
   renderTokenToolbar(textarea);
+  renderMediaToolbar(textarea);
 
   if (s.type === "cyoa") renderChoicesBlock(chapter);
 
@@ -626,6 +756,31 @@ function renderTokenToolbar(textareaEl) {
       if (!textarea) return;
       const start = textarea.selectionStart, end = textarea.selectionEnd;
       const token = `{{${chip.dataset.id}}}`;
+      textarea.value = textarea.value.slice(0, start) + token + textarea.value.slice(end);
+      textarea.dispatchEvent(new Event("input"));
+      textarea.focus();
+      textarea.selectionStart = textarea.selectionEnd = start + token.length;
+    };
+  });
+}
+
+function renderMediaToolbar(textareaEl) {
+  const s = state.current;
+  const toolbar = document.getElementById("mediaToolbar");
+  if (!toolbar) return;
+  const textarea = textareaEl || document.getElementById("chText");
+  if (s.media.length === 0) {
+    toolbar.innerHTML = `<span style="font-size:12px;color:var(--ink-faint);">No images yet — add one from the ${ICON.image} menu above, then drop it in here.</span>`;
+    return;
+  }
+  toolbar.innerHTML = s.media.map((m) =>
+    `<button class="token-chip token-chip--media" data-id="${m.id}" type="button"><img src="${m.dataUrl}" alt=""> ${escapeHtml(m.name)}</button>`
+  ).join("");
+  toolbar.querySelectorAll(".token-chip--media").forEach((chip) => {
+    chip.onclick = () => {
+      if (!textarea) return;
+      const start = textarea.selectionStart, end = textarea.selectionEnd;
+      const token = `{{img:${chip.dataset.id}}}`;
       textarea.value = textarea.value.slice(0, start) + token + textarea.value.slice(end);
       textarea.dispatchEvent(new Event("input"));
       textarea.focus();
@@ -718,7 +873,7 @@ function renderReader(chapterId) {
 
   document.getElementById("btnBack").onclick = () => navigate("#/");
   wireThemeButton(document.getElementById("btnTheme"));
-  document.getElementById("btnChars").onclick = openDrawer;
+  document.getElementById("btnChars").onclick = () => openDrawer("characters");
   document.getElementById("btnMap").onclick = () => navigate(`#/story/${s.id}/map?mode=read`);
 
   renderReaderBody(chapter.id);
@@ -814,7 +969,7 @@ function renderMap(mode) {
       <div class="map-legend" id="mapLegend"></div>
     </div>`;
   document.getElementById("btnBack").onclick = () => navigate(mode === "edit" ? `#/story/${s.id}/edit` : `#/story/${s.id}/read`);
-  document.getElementById("btnChars").onclick = openDrawer;
+  document.getElementById("btnChars").onclick = () => openDrawer("characters");
   wireThemeButton(document.getElementById("btnTheme"));
 
   if (editable) {

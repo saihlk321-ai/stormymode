@@ -2,7 +2,7 @@
 // Story data itself lives in IndexedDB, not the cache, so updating this
 // worker never touches saved stories.
 
-const CACHE_NAME = "waypoint-shell-v4";
+const CACHE_NAME = "waypoint-shell-v5";
 const SHELL_FILES = [
   "./",
   "./index.html",
