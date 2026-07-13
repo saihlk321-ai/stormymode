@@ -56,16 +56,17 @@ function resolveCharacterToken(raw, chars) {
          chars.find((c) => (c.name || "").trim().toLowerCase() === key) ||
          null;
 }
-function resolveMediaToken(raw, media) {
+function resolveMediaToken(raw, story) {
   const key = raw.trim().toLowerCase();
   if (!key) return null;
-  return media.find((m) => m.id.toLowerCase() === key) ||
-         media.find((m) => (m.name || "").trim().toLowerCase() === key) ||
-         null;
+  const slots = story.media || [];
+  const slot = slots.find((m) => m.id.toLowerCase() === key) ||
+               slots.find((m) => (m.name || "").trim().toLowerCase() === key);
+  if (!slot || !slot.libraryImageId) return null;
+  return libraryCache.find((img) => img.id === slot.libraryImageId) || null;
 }
 function renderTokensHTML(text, story) {
   const chars = story.characters || [];
-  const media = story.media || [];
   const src = text || "";
   const re = tokenRegex();
   let out = "", lastIndex = 0, m;
@@ -73,10 +74,10 @@ function renderTokensHTML(text, story) {
     out += escapeHtml(src.slice(lastIndex, m.index));
     const raw = m[1];
     if (/^img:/i.test(raw.trim())) {
-      const item = resolveMediaToken(raw.trim().slice(4), media);
+      const item = resolveMediaToken(raw.trim().slice(4), story);
       out += item
         ? `<span class="reader-image-block"><img class="reader-image" src="${item.dataUrl}" alt="${escapeHtml(item.name)}" loading="lazy"></span>`
-        : `<span class="reader-token">[image missing]</span>`;
+        : "";
     } else {
       const c = resolveCharacterToken(raw, chars);
       out += c ? `<span class="reader-token">${escapeHtml(c.name)}</span>` : `<span class="reader-token">[deleted]</span>`;
@@ -88,53 +89,63 @@ function renderTokensHTML(text, story) {
 }
 
 /* ---------- IndexedDB ---------- */
-const DB_NAME = "waypoint-db", DB_VERSION = 1, STORE = "stories";
+const DB_NAME = "waypoint-db", DB_VERSION = 2, STORE = "stories", LIBRARY_STORE = "library";
 function openDB() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: "id" });
+      if (!db.objectStoreNames.contains(LIBRARY_STORE)) db.createObjectStore(LIBRARY_STORE, { keyPath: "id" });
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
 }
-async function dbGetAll() {
+async function dbGetAll(store = STORE) {
   const db = await openDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, "readonly");
-    const req = tx.objectStore(STORE).getAll();
+    const tx = db.transaction(store, "readonly");
+    const req = tx.objectStore(store).getAll();
     req.onsuccess = () => resolve(req.result || []);
     req.onerror = () => reject(req.error);
   });
 }
-async function dbGet(id) {
+async function dbGet(id, store = STORE) {
   const db = await openDB();
   return new Promise((resolve, reject) => {
-    const req = db.transaction(STORE, "readonly").objectStore(STORE).get(id);
+    const req = db.transaction(store, "readonly").objectStore(store).get(id);
     req.onsuccess = () => resolve(req.result || null);
     req.onerror = () => reject(req.error);
   });
 }
-async function dbPut(story) {
+async function dbPut(record, store = STORE) {
   const db = await openDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, "readwrite");
-    tx.objectStore(STORE).put(story);
+    const tx = db.transaction(store, "readwrite");
+    tx.objectStore(store).put(record);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
 }
-async function dbDelete(id) {
+async function dbDelete(id, store = STORE) {
   const db = await openDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, "readwrite");
-    tx.objectStore(STORE).delete(id);
+    const tx = db.transaction(store, "readwrite");
+    tx.objectStore(store).delete(id);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
 }
+
+/* ---------- shared image library (used across every story) ---------- */
+let libraryCache = [];
+async function refreshLibraryCache() {
+  libraryCache = (await dbGetAll(LIBRARY_STORE)).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  return libraryCache;
+}
+async function libraryPut(item) { await dbPut(item, LIBRARY_STORE); await refreshLibraryCache(); }
+async function libraryDelete(id) { await dbDelete(id, LIBRARY_STORE); await refreshLibraryCache(); }
 
 /* ---------- model factories ---------- */
 function makeChapter(title, x, y) {
@@ -230,6 +241,7 @@ async function route() {
     const s = await dbGet(r.storyId);
     if (!s) { navigate("#/"); return; }
     normalizeStory(s);
+    await migrateStoryMediaToLibrary(s);
     state.current = s;
     readerHistory = [];
   }
@@ -249,6 +261,22 @@ function normalizeStory(s) {
     c.choices = c.choices || [];
     c.collapsed = !!c.collapsed;
   });
+}
+
+/* older stories embedded each image's data URL directly on the slot; move
+   that data into the shared library once, and leave the slot pointing at it */
+async function migrateStoryMediaToLibrary(s) {
+  let changed = false;
+  for (const slot of s.media) {
+    if (slot.dataUrl && !slot.libraryImageId) {
+      const libItem = { id: uid(), name: slot.name || "Imported image", dataUrl: slot.dataUrl, createdAt: Date.now() };
+      await libraryPut(libItem);
+      slot.libraryImageId = libItem.id;
+      delete slot.dataUrl;
+      changed = true;
+    }
+  }
+  if (changed) await dbPut(s);
 }
 
 /* ================= LIBRARY ================= */
@@ -404,24 +432,38 @@ function renderDrawer() {
   const s = state.current;
   const drawer = document.querySelector(".drawer");
   const tab = state.drawerTab;
+  const hints = {
+    characters: "Rename anyone — every mention updates across the whole story.",
+    images: "Placeholders like {{img:image1}} — point each one at any picture, and swap it anytime.",
+    library: "Your photo shelf, shared by every story in the app.",
+  };
+  const footers = {
+    characters: `<button class="btn btn--block" id="addChar">${ICON.plus} Add character</button>`,
+    images: `<button class="btn btn--block" id="addSlot">${ICON.plus} Add image placeholder</button>`,
+    library: `<button class="btn btn--block" id="addLibraryImage">${ICON.plus} Add photo to library</button>
+      <div class="drawer__footer-row">
+        <button class="btn btn--sm btn--ghost" id="exportLibrary">${ICON.download} Export library</button>
+        <button class="btn btn--sm btn--ghost" id="importLibrary">${ICON.upload} Import library</button>
+      </div>
+      <input type="file" id="libraryFile" accept="application/json" style="display:none">`,
+  };
   drawer.innerHTML = `
     <div class="drawer__header">
       <div class="drawer__tabs">
         <button class="drawer__tab ${tab === "characters" ? "drawer__tab--active" : ""}" data-tab="characters">${ICON.people} Characters</button>
         <button class="drawer__tab ${tab === "images" ? "drawer__tab--active" : ""}" data-tab="images">${ICON.image} Images</button>
+        <button class="drawer__tab ${tab === "library" ? "drawer__tab--active" : ""}" data-tab="library">${ICON.book} Library</button>
       </div>
-      <p>${tab === "characters" ? "Rename anyone — every mention updates across the whole story." : "Add pictures or GIFs, then insert them into any chapter."}</p>
+      <p>${hints[tab]}</p>
     </div>
     <div class="drawer__body" id="drawerBody"></div>
-    <div class="drawer__footer">
-      ${tab === "characters"
-        ? `<button class="btn btn--block" id="addChar">${ICON.plus} Add character</button>`
-        : `<button class="btn btn--block" id="addMedia">${ICON.plus} Add image or GIF</button><input type="file" id="mediaFile" accept="image/*" style="display:none">`}
-    </div>`;
+    <div class="drawer__footer">${footers[tab]}</div>`;
   drawer.querySelectorAll(".drawer__tab").forEach((btn) => {
     btn.addEventListener("click", () => { state.drawerTab = btn.dataset.tab; renderDrawer(); });
   });
-  if (tab === "characters") renderCharacterTab(drawer, s); else renderMediaTab(drawer, s);
+  if (tab === "characters") renderCharacterTab(drawer, s);
+  else if (tab === "images") renderSlotsTab(drawer, s);
+  else renderLibraryTab(drawer, s);
 }
 
 function renderCharacterTab(drawer, s) {
@@ -476,97 +518,258 @@ function renderCharacterTab(drawer, s) {
   };
 }
 
-function renderMediaTab(drawer, s) {
+/* ---- Images tab: per-story placeholders that point at a library photo ---- */
+function nextImageSlotId(s) {
+  const existing = new Set(s.media.map((m) => m.id));
+  let n = 1;
+  while (existing.has(`image${n}`)) n++;
+  return `image${n}`;
+}
+function renderSlotsTab(drawer, s) {
   const list = drawer.querySelector("#drawerBody");
   if (s.media.length === 0) {
-    list.innerHTML = `<p style="color:var(--ink-soft);font-size:13px;">No images yet. Add one below, then drop it into any chapter from the editor toolbar — just like a character's name.</p>`;
+    list.innerHTML = `<p style="color:var(--ink-soft);font-size:13px;">No image placeholders yet. Add one, point it at a photo, then insert it into any chapter from the editor toolbar.</p>`;
   } else {
     list.innerHTML = "";
-    s.media.forEach((mItem) => {
+    s.media.forEach((slot) => {
+      const img = slot.libraryImageId ? libraryCache.find((x) => x.id === slot.libraryImageId) : null;
       const row = document.createElement("div");
       row.className = "media-row";
       row.innerHTML = `
-        <img class="media-thumb" src="${mItem.dataUrl}" alt="${escapeHtml(mItem.name)}">
+        ${img
+          ? `<img class="media-thumb" src="${img.dataUrl}" alt="${escapeHtml(img.name)}">`
+          : `<div class="media-thumb media-thumb--empty">${ICON.image}</div>`}
         <div class="char-fields">
-          <input class="char-name-input" value="${escapeHtml(mItem.name)}" data-id="${mItem.id}">
-          <div class="char-tag">{{img:${mItem.id}}}</div>
+          <input class="char-name-input" value="${escapeHtml(slot.name || slot.id)}" data-id="${slot.id}">
+          <div class="char-tag">{{img:${slot.id}}}${img ? ` → ${escapeHtml(img.name)}` : " → not set"}</div>
         </div>
-        <button class="char-icon-btn" data-id="${mItem.id}" title="Remove image">${ICON.x}</button>`;
+        <button class="char-icon-btn" data-choose="${slot.id}" title="Choose which picture this is">${ICON.wand}</button>
+        <button class="char-icon-btn" data-id="${slot.id}" title="Remove this placeholder">${ICON.x}</button>`;
       list.appendChild(row);
     });
   }
   list.querySelectorAll(".char-name-input").forEach((inp) => {
     inp.addEventListener("input", () => {
-      const m = s.media.find((x) => x.id === inp.dataset.id);
-      if (m) { m.name = inp.value; markDirty(); }
+      const slot = s.media.find((x) => x.id === inp.dataset.id);
+      if (slot) { slot.name = inp.value; markDirty(); }
+    });
+  });
+  list.querySelectorAll("[data-choose]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const slot = s.media.find((x) => x.id === btn.dataset.choose);
+      if (slot) openImagePicker(slot);
     });
   });
   list.querySelectorAll(".char-icon-btn[data-id]").forEach((btn) => {
     btn.addEventListener("click", () => {
-      if (!confirm("Remove this image? Any spot it's used in the story will show as missing.")) return;
+      if (!confirm("Remove this placeholder? Any spot it's used in the story will show as empty.")) return;
       s.media = s.media.filter((x) => x.id !== btn.dataset.id);
       markDirty();
       renderDrawer();
       refreshUnderlyingTextIfVisible();
     });
   });
-  const fileInput = drawer.querySelector("#mediaFile");
-  drawer.querySelector("#addMedia").onclick = () => fileInput.click();
-  fileInput.onchange = () => handleAddMedia(fileInput.files[0], () => { fileInput.value = ""; });
-}
-
-/* store an uploaded image/GIF as a self-contained data URL on the story;
-   static images are downscaled to keep story files small, GIFs are kept
-   as-is so their animation isn't destroyed by re-encoding */
-function handleAddMedia(file, done) {
-  if (!file) { done && done(); return; }
-  const s = state.current;
-  const finish = (dataUrl) => {
-    const defaultName = file.name.replace(/\.[a-z0-9]+$/i, "").slice(0, 40) || "image";
-    const name = prompt("Name this image (used to find it later):", defaultName);
-    if (name === null) { done && done(); return; }
-    const id = slugify(name || defaultName, s.media.map((m) => m.id));
-    s.media.push({ id, name: (name || defaultName).trim(), dataUrl });
+  drawer.querySelector("#addSlot").onclick = () => {
+    const slot = { id: nextImageSlotId(s), name: "", libraryImageId: null };
+    s.media.push(slot);
     markDirty();
     renderDrawer();
     refreshUnderlyingTextIfVisible();
-    done && done();
+    openImagePicker(slot);
   };
+}
 
-  if (file.type === "image/gif") {
-    if (file.size > 5 * 1024 * 1024) {
-      toast("That GIF is quite large — it may slow down saving and exporting");
-    }
-    const reader = new FileReader();
-    reader.onload = () => finish(reader.result);
-    reader.readAsDataURL(file);
-    return;
+/* ---- Library tab: the shared photo shelf, usable from any story ---- */
+function renderLibraryTab(drawer, s) {
+  const wrap = drawer.querySelector("#drawerBody");
+  if (libraryCache.length === 0) {
+    wrap.innerHTML = `<p style="color:var(--ink-soft);font-size:13px;">Your library is empty. Add a photo or GIF below — it'll be available to every story from then on.</p>`;
+  } else {
+    wrap.innerHTML = `<div class="library-grid"></div>`;
+    const grid = wrap.querySelector(".library-grid");
+    libraryCache.forEach((item) => {
+      const cell = document.createElement("div");
+      cell.className = "library-cell";
+      cell.innerHTML = `
+        <img src="${item.dataUrl}" alt="${escapeHtml(item.name)}">
+        <input class="library-cell__name" value="${escapeHtml(item.name)}" data-id="${item.id}">
+        <button class="library-cell__del" data-id="${item.id}" title="Delete from library">${ICON.x}</button>`;
+      grid.appendChild(cell);
+    });
+    grid.querySelectorAll(".library-cell__name").forEach((inp) => {
+      inp.addEventListener("change", async () => {
+        const item = libraryCache.find((x) => x.id === inp.dataset.id);
+        if (item) { item.name = inp.value.trim() || item.name; await libraryPut(item); refreshUnderlyingTextIfVisible(); }
+      });
+    });
+    grid.querySelectorAll(".library-cell__del").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        if (!confirm("Delete this photo from the library? Any story using it will show that spot as empty.")) return;
+        await libraryDelete(btn.dataset.id);
+        renderDrawer();
+        refreshUnderlyingTextIfVisible();
+      });
+    });
   }
-
-  const img = new Image();
-  const reader = new FileReader();
-  reader.onload = () => {
-    img.onload = () => {
-      const maxDim = 1600;
-      let { width, height } = img;
-      if (width > maxDim || height > maxDim) {
-        const ratio = Math.min(maxDim / width, maxDim / height);
-        width = Math.round(width * ratio);
-        height = Math.round(height * ratio);
-      }
-      const canvas = document.createElement("canvas");
-      canvas.width = width; canvas.height = height;
-      const ctx = canvas.getContext("2d");
-      ctx.drawImage(img, 0, 0, width, height);
-      const isPng = file.type === "image/png";
-      const dataUrl = canvas.toDataURL(isPng ? "image/png" : "image/jpeg", 0.85);
-      finish(dataUrl);
+  drawer.querySelector("#addLibraryImage").onclick = () => {
+    const input = document.createElement("input");
+    input.type = "file"; input.accept = "image/*";
+    input.onchange = async () => {
+      const file = input.files[0];
+      if (!file) return;
+      await addFileToLibrary(file);
+      renderDrawer();
     };
-    img.onerror = () => { toast("Couldn't read that image"); done && done(); };
-    img.src = reader.result;
+    input.click();
   };
-  reader.onerror = () => { toast("Couldn't read that image"); done && done(); };
-  reader.readAsDataURL(file);
+  drawer.querySelector("#exportLibrary").onclick = exportLibrary;
+  const libFile = drawer.querySelector("#libraryFile");
+  drawer.querySelector("#importLibrary").onclick = () => libFile.click();
+  libFile.onchange = async () => {
+    const file = libFile.files[0];
+    if (file) await importLibraryFile(file);
+    libFile.value = "";
+    renderDrawer();
+  };
+}
+
+/* ---- picking / assigning a library image to a story slot ---- */
+function openImagePicker(slot) {
+  const scrim = document.createElement("div");
+  scrim.className = "modal-scrim";
+  scrim.innerHTML = `
+    <div class="modal modal--picker">
+      <h3>${ICON.image} Choose a picture</h3>
+      <p class="hint">For {{img:${slot.id}}} — pick from your library, or add a new one.</p>
+      <button class="btn btn--primary btn--block" id="pickerUpload">${ICON.upload} Upload new photo…</button>
+      <div class="picker-grid" id="pickerGrid"></div>
+      <div class="modal-actions"><button class="btn btn--block" id="pickerCancel">Cancel</button></div>
+    </div>`;
+  document.body.appendChild(scrim);
+  scrim.addEventListener("click", (e) => { if (e.target === scrim) scrim.remove(); });
+  scrim.querySelector("#pickerCancel").onclick = () => scrim.remove();
+
+  const grid = scrim.querySelector("#pickerGrid");
+  if (libraryCache.length === 0) {
+    grid.innerHTML = `<p style="color:var(--ink-soft);font-size:13px;">Your library is empty — upload a photo to get started.</p>`;
+  } else {
+    libraryCache.forEach((item) => {
+      const cell = document.createElement("button");
+      cell.className = "picker-cell" + (slot.libraryImageId === item.id ? " picker-cell--selected" : "");
+      cell.innerHTML = `<img src="${item.dataUrl}" alt="${escapeHtml(item.name)}"><span>${escapeHtml(item.name)}</span>`;
+      cell.onclick = () => {
+        slot.libraryImageId = item.id;
+        if (!slot.name) slot.name = item.name;
+        markDirty();
+        scrim.remove();
+        renderDrawer();
+        refreshUnderlyingTextIfVisible();
+      };
+      grid.appendChild(cell);
+    });
+  }
+  scrim.querySelector("#pickerUpload").onclick = () => {
+    const input = document.createElement("input");
+    input.type = "file"; input.accept = "image/*";
+    input.onchange = async () => {
+      const file = input.files[0];
+      if (!file) return;
+      const item = await addFileToLibrary(file);
+      if (item) {
+        slot.libraryImageId = item.id;
+        if (!slot.name) slot.name = item.name;
+        markDirty();
+        renderDrawer();
+        refreshUnderlyingTextIfVisible();
+      }
+      scrim.remove();
+    };
+    input.click();
+  };
+}
+
+/* read a file into a data URL; static images are downscaled to keep things
+   small, GIFs are kept as-is so their animation isn't destroyed */
+function processImageFile(file) {
+  return new Promise((resolve, reject) => {
+    if (!file) { reject(new Error("no file")); return; }
+    if (file.type === "image/gif") {
+      if (file.size > 5 * 1024 * 1024) toast("That GIF is quite large — it may slow down saving and exporting");
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+      return;
+    }
+    const img = new Image();
+    const reader = new FileReader();
+    reader.onload = () => {
+      img.onload = () => {
+        const maxDim = 1600;
+        let { width, height } = img;
+        if (width > maxDim || height > maxDim) {
+          const ratio = Math.min(maxDim / width, maxDim / height);
+          width = Math.round(width * ratio);
+          height = Math.round(height * ratio);
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width; canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, width, height);
+        const isPng = file.type === "image/png";
+        resolve(canvas.toDataURL(isPng ? "image/png" : "image/jpeg", 0.85));
+      };
+      img.onerror = () => reject(new Error("bad image"));
+      img.src = reader.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+async function addFileToLibrary(file) {
+  let dataUrl;
+  try {
+    dataUrl = await processImageFile(file);
+  } catch (e) {
+    toast("Couldn't read that image");
+    return null;
+  }
+  const defaultName = file.name.replace(/\.[a-z0-9]+$/i, "").slice(0, 40) || "image";
+  const name = prompt("Name this photo (used to find it later):", defaultName);
+  if (name === null) return null;
+  const item = { id: uid(), name: (name || defaultName).trim(), dataUrl, createdAt: Date.now() };
+  await libraryPut(item);
+  return item;
+}
+
+function exportLibrary() {
+  if (libraryCache.length === 0) { toast("Your library is empty"); return; }
+  const blob = new Blob([JSON.stringify(libraryCache, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "waypoint-image-library.json";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  toast("Library saved as a file");
+}
+async function importLibraryFile(file) {
+  try {
+    const text = await file.text();
+    const data = JSON.parse(text);
+    if (!Array.isArray(data)) throw new Error("bad shape");
+    let count = 0;
+    for (const item of data) {
+      if (!item || !item.dataUrl) continue;
+      await dbPut({ id: uid(), name: item.name || "image", dataUrl: item.dataUrl, createdAt: Date.now() }, LIBRARY_STORE);
+      count++;
+    }
+    await refreshLibraryCache();
+    toast(`Imported ${count} photo${count === 1 ? "" : "s"}`);
+  } catch (e) {
+    alert("That file doesn't look like a Waypoint library export.");
+  }
 }
 
 /* find-and-replace a plain word/phrase into a character token, across every chapter */
@@ -770,12 +973,14 @@ function renderMediaToolbar(textareaEl) {
   if (!toolbar) return;
   const textarea = textareaEl || document.getElementById("chText");
   if (s.media.length === 0) {
-    toolbar.innerHTML = `<span style="font-size:12px;color:var(--ink-faint);">No images yet — add one from the ${ICON.image} menu above, then drop it in here.</span>`;
+    toolbar.innerHTML = `<span style="font-size:12px;color:var(--ink-faint);">No image placeholders yet — add one from the ${ICON.image} menu above, then drop it in here.</span>`;
     return;
   }
-  toolbar.innerHTML = s.media.map((m) =>
-    `<button class="token-chip token-chip--media" data-id="${m.id}" type="button"><img src="${m.dataUrl}" alt=""> ${escapeHtml(m.name)}</button>`
-  ).join("");
+  toolbar.innerHTML = s.media.map((slot) => {
+    const img = slot.libraryImageId ? libraryCache.find((x) => x.id === slot.libraryImageId) : null;
+    const thumb = img ? `<img src="${img.dataUrl}" alt="">` : `<span class="token-chip--media-empty">${ICON.image}</span>`;
+    return `<button class="token-chip token-chip--media" data-id="${slot.id}" type="button">${thumb} ${escapeHtml(slot.name || slot.id)}</button>`;
+  }).join("");
   toolbar.querySelectorAll(".token-chip--media").forEach((chip) => {
     chip.onclick = () => {
       if (!textarea) return;
@@ -1408,7 +1613,8 @@ function svgPoint(el, cx, cy) {
 }
 
 /* ---------- init ---------- */
-function init() {
+async function init() {
+  await refreshLibraryCache();
   route();
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
