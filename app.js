@@ -29,6 +29,7 @@ const ICON = {
   wand: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20L15 9"/><path d="M17 3l.9 1.9L20 5.8l-2.1.9L17 8.6l-.9-1.9L14 5.8l2.1-.9L17 3z"/><path d="M18.5 13.5l.6 1.3 1.3.6-1.3.6-.6 1.3-.6-1.3-1.3-.6 1.3-.6.6-1.3z"/></svg>`,
   branch: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2.3"/><circle cx="6" cy="19" r="2.3"/><circle cx="18" cy="12" r="2.3"/><path d="M6 7.3V16.7M6 10c0 3 3 2 5.5 2H14"/></svg>`,
   image: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="M20 15.5l-5-4.5-3.5 3-2-1.5L4 16"/></svg>`,
+  refresh: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12a8 8 0 0114-5.3M20 12a8 8 0 01-14 5.3"/><path d="M18 3v4.5h-4.5M6 21v-4.5h4.5"/></svg>`,
 };
 
 /* ---------- utils ---------- */
@@ -195,6 +196,76 @@ function wireThemeButton(btn) {
   btn.onclick = toggleTheme;
 }
 
+/* ---------- text size (applies to reading and editing text) ---------- */
+const TEXT_SCALES = [0.85, 0.92, 1, 1.1, 1.22, 1.36, 1.5];
+function currentTextScale() {
+  const v = parseFloat(localStorage.getItem("waypoint-text-scale"));
+  return TEXT_SCALES.includes(v) ? v : 1;
+}
+function applyTextScale(scale) {
+  document.documentElement.style.setProperty("--text-scale", scale);
+  try { localStorage.setItem("waypoint-text-scale", scale); } catch (e) {}
+}
+function stepTextScale(dir) {
+  const cur = currentTextScale();
+  let idx = TEXT_SCALES.indexOf(cur);
+  if (idx === -1) idx = TEXT_SCALES.indexOf(1);
+  idx = clamp(idx + dir, 0, TEXT_SCALES.length - 1);
+  applyTextScale(TEXT_SCALES[idx]);
+}
+function toggleTextSizeMenu(anchorBtn) {
+  const existing = document.querySelector(".textsize-pop");
+  if (existing) { existing.remove(); document.removeEventListener("pointerdown", outsideTextSizeHandler); return; }
+  const pop = document.createElement("div");
+  pop.className = "textsize-pop";
+  pop.innerHTML = `
+    <button id="tsMinus" title="Smaller text">A−</button>
+    <span id="tsLabel">${Math.round(currentTextScale() * 100)}%</span>
+    <button id="tsPlus" title="Larger text">A+</button>`;
+  document.body.appendChild(pop);
+  const rect = anchorBtn.getBoundingClientRect();
+  pop.style.top = (rect.bottom + 8) + "px";
+  pop.style.right = (window.innerWidth - rect.right) + "px";
+  const label = pop.querySelector("#tsLabel");
+  pop.querySelector("#tsMinus").onclick = () => { stepTextScale(-1); label.textContent = Math.round(currentTextScale() * 100) + "%"; };
+  pop.querySelector("#tsPlus").onclick = () => { stepTextScale(1); label.textContent = Math.round(currentTextScale() * 100) + "%"; };
+  setTimeout(() => document.addEventListener("pointerdown", outsideTextSizeHandler), 0);
+}
+function outsideTextSizeHandler(e) {
+  const pop = document.querySelector(".textsize-pop");
+  if (pop && !pop.contains(e.target) && e.target.id !== "btnTextSize") {
+    pop.remove();
+    document.removeEventListener("pointerdown", outsideTextSizeHandler);
+  }
+}
+
+/* ---------- checking for app updates ---------- */
+function showUpdateBanner() {
+  if (document.querySelector(".update-banner")) return;
+  const bar = document.createElement("div");
+  bar.className = "update-banner";
+  bar.innerHTML = `<span>${ICON.refresh} A new version is ready.</span><button id="updateReloadBtn">Reload</button>`;
+  document.body.appendChild(bar);
+  document.getElementById("updateReloadBtn").onclick = () => location.reload();
+}
+async function checkForUpdates() {
+  if (!("serviceWorker" in navigator)) { toast("This browser doesn't support updates"); return; }
+  const reg = await navigator.serviceWorker.getRegistration();
+  if (!reg) { toast("Nothing installed yet to update"); return; }
+  toast("Checking for updates…");
+  try {
+    await reg.update();
+  } catch (e) {
+    toast("Couldn't check — check your connection");
+    return;
+  }
+  setTimeout(() => {
+    if (!reg.installing && !reg.waiting && !document.querySelector(".update-banner")) {
+      toast("You're on the latest version");
+    }
+  }, 1500);
+}
+
 function toast(msg) {
   let el = document.querySelector(".toast");
   if (!el) { el = document.createElement("div"); el.className = "toast"; document.body.appendChild(el); }
@@ -287,6 +358,7 @@ async function renderLibrary() {
       <div class="topbar__title">Waypoint</div>
       <div class="topbar__actions">
         <button class="topbar__icon-btn" id="btnTheme" title="Toggle theme"></button>
+        <button class="topbar__icon-btn" id="btnCheckUpdates" title="Check for updates">${ICON.refresh}</button>
         <button class="topbar__icon-btn" id="btnImport" title="Import story">${ICON.upload}</button>
       </div>
     </div>
@@ -307,6 +379,7 @@ async function renderLibrary() {
   `;
   document.getElementById("btnNew").onclick = () => openNewStoryModal();
   wireThemeButton(document.getElementById("btnTheme"));
+  document.getElementById("btnCheckUpdates").onclick = checkForUpdates;
   document.getElementById("btnImport").onclick = () => document.getElementById("importFile").click();
   document.getElementById("importFile").onchange = handleImportFile;
   app.querySelectorAll("[data-open]").forEach((el) => el.addEventListener("click", () => navigate(`#/story/${el.dataset.open}/read`)));
@@ -1069,6 +1142,7 @@ function renderReader(chapterId) {
       <button class="topbar__icon-btn" id="btnBack">${ICON.back}</button>
       <div class="topbar__title">${escapeHtml(s.title)}</div>
       <div class="topbar__actions">
+        <button class="topbar__icon-btn" id="btnTextSize" title="Text size">Aa</button>
         <button class="topbar__icon-btn" id="btnTheme" title="Toggle theme"></button>
         <button class="topbar__icon-btn" id="btnChars" title="Characters">${ICON.people}</button>
         <button class="topbar__icon-btn" id="btnMap" title="Story map">${ICON.map}</button>
@@ -1077,6 +1151,7 @@ function renderReader(chapterId) {
     <div class="reader-wrap"><div class="reader-page" id="readerPage"></div></div>`;
 
   document.getElementById("btnBack").onclick = () => navigate("#/");
+  document.getElementById("btnTextSize").onclick = (e) => toggleTextSizeMenu(e.currentTarget);
   wireThemeButton(document.getElementById("btnTheme"));
   document.getElementById("btnChars").onclick = () => openDrawer("characters");
   document.getElementById("btnMap").onclick = () => navigate(`#/story/${s.id}/map?mode=read`);
@@ -1614,9 +1689,16 @@ function svgPoint(el, cx, cy) {
 
 /* ---------- init ---------- */
 async function init() {
+  applyTextScale(currentTextScale());
   await refreshLibraryCache();
   route();
   if ("serviceWorker" in navigator) {
+    let controllerChanged = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (controllerChanged) return;
+      controllerChanged = true;
+      showUpdateBanner();
+    });
     window.addEventListener("load", () => {
       navigator.serviceWorker.register("./sw.js")
         .then(() => navigator.serviceWorker.ready)
