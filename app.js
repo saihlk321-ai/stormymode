@@ -30,6 +30,8 @@ const ICON = {
   branch: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2.3"/><circle cx="6" cy="19" r="2.3"/><circle cx="18" cy="12" r="2.3"/><path d="M6 7.3V16.7M6 10c0 3 3 2 5.5 2H14"/></svg>`,
   image: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="M20 15.5l-5-4.5-3.5 3-2-1.5L4 16"/></svg>`,
   refresh: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12a8 8 0 0114-5.3M20 12a8 8 0 01-14 5.3"/><path d="M18 3v4.5h-4.5M6 21v-4.5h4.5"/></svg>`,
+  lock: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="10.5" width="14" height="9" rx="2"/><path d="M8 10.5V7a4 4 0 018 0v3.5"/></svg>`,
+  unlock: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="10.5" width="14" height="9" rx="2"/><path d="M8 10.5V7a4 4 0 017.8-1.5"/></svg>`,
 };
 
 /* ---------- utils ---------- */
@@ -169,7 +171,7 @@ function makeStory(title, type) {
 }
 
 /* ---------- app state ---------- */
-const state = { current: null, drawerOpen: false, drawerTab: "characters", saveTimer: null };
+const state = { current: null, drawerOpen: false, drawerTab: "characters", saveTimer: null, unlocked: false };
 const app = document.getElementById("app");
 let readerHistory = [];
 
@@ -311,6 +313,7 @@ async function route() {
   if (!state.current || state.current.id !== r.storyId) {
     const s = await dbGet(r.storyId);
     if (!s) { navigate("#/"); return; }
+    if (s.hidden && !state.unlocked) { navigate("#/"); return; }
     normalizeStory(s);
     await migrateStoryMediaToLibrary(s);
     state.current = s;
@@ -325,6 +328,7 @@ async function route() {
 function normalizeStory(s) {
   s.characters = s.characters || [];
   s.media = s.media || [];
+  s.hidden = !!s.hidden;
   s.chapters = s.chapters || [];
   s.chapters.forEach((c, i) => {
     if (typeof c.x !== "number") c.x = 120 + (i % 4) * 150;
@@ -352,10 +356,12 @@ async function migrateStoryMediaToLibrary(s) {
 
 /* ================= LIBRARY ================= */
 async function renderLibrary() {
-  const stories = (await dbGetAll()).sort((a, b) => b.updatedAt - a.updatedAt);
+  const all = (await dbGetAll()).sort((a, b) => b.updatedAt - a.updatedAt);
+  const stories = state.unlocked ? all : all.filter((s) => !s.hidden);
+  const lockSetUp = !!localStorage.getItem("waypoint-lock-hash");
   app.innerHTML = `
     <div class="topbar">
-      <div class="topbar__title">Waypoint</div>
+      <div class="topbar__title" id="libTitle">Waypoint</div>
       <div class="topbar__actions">
         <button class="topbar__icon-btn" id="btnTheme" title="Toggle theme"></button>
         <button class="topbar__icon-btn" id="btnCheckUpdates" title="Check for updates">${ICON.refresh}</button>
@@ -369,7 +375,7 @@ async function renderLibrary() {
           <p>Write a straight-through story, or a choose-your-own-adventure with branching chapters.</p>
         </div>` : `
         <div class="storygrid">
-          ${stories.map(storyCardHTML).join("")}
+          ${stories.map((s) => storyCardHTML(s, lockSetUp)).join("")}
         </div>`}
     </div>
     <div class="fab-row">
@@ -382,25 +388,143 @@ async function renderLibrary() {
   document.getElementById("btnCheckUpdates").onclick = checkForUpdates;
   document.getElementById("btnImport").onclick = () => document.getElementById("importFile").click();
   document.getElementById("importFile").onchange = handleImportFile;
+  document.getElementById("libTitle").addEventListener("click", handleTitleTap);
   app.querySelectorAll("[data-open]").forEach((el) => el.addEventListener("click", () => navigate(`#/story/${el.dataset.open}/read`)));
   app.querySelectorAll("[data-editcard]").forEach((el) => el.addEventListener("click", (e) => { e.stopPropagation(); navigate(`#/story/${el.dataset.editcard}/edit`); }));
   app.querySelectorAll("[data-export]").forEach((el) => el.addEventListener("click", (e) => { e.stopPropagation(); exportStoryById(el.dataset.export); }));
   app.querySelectorAll("[data-delete]").forEach((el) => el.addEventListener("click", (e) => { e.stopPropagation(); deleteStoryCard(el.dataset.delete); }));
+  app.querySelectorAll("[data-lock]").forEach((el) => el.addEventListener("click", (e) => { e.stopPropagation(); toggleStoryLock(el.dataset.lock); }));
 }
 
-function storyCardHTML(s) {
+function storyCardHTML(s, lockSetUp) {
   const words = wordCount(s);
   return `
     <div class="storycard storycard--${s.type}" data-open="${s.id}">
       <div class="storycard__badge">${s.type === "cyoa" ? "Choose your adventure" : "Story"} · ${s.chapters.length} ch</div>
-      <div class="storycard__title">${escapeHtml(s.title)}</div>
+      <div class="storycard__title">${escapeHtml(s.title)}${s.hidden ? ` <span class="storycard__lockbadge" title="Locked">${ICON.lock}</span>` : ""}</div>
       <div class="storycard__meta"><span>${words} words</span><span>${formatDate(s.updatedAt)}</span></div>
       <div class="storycard__actions">
         <button class="btn btn--sm" data-editcard="${s.id}">Edit</button>
         <button class="btn btn--sm btn--ghost" data-export="${s.id}" title="Export as file">${ICON.download}</button>
+        ${lockSetUp ? `<button class="btn btn--sm btn--ghost" data-lock="${s.id}" title="${s.hidden ? "Unlock" : "Lock"} this story">${s.hidden ? ICON.unlock : ICON.lock}</button>` : ""}
         <button class="btn btn--sm btn--ghost" data-delete="${s.id}" title="Delete">${ICON.trash}</button>
       </div>
     </div>`;
+}
+
+/* ---- privacy lock: tap the title 5 times to reach the passcode panel ---- */
+let titleTapCount = 0, titleTapTimer = null;
+function handleTitleTap() {
+  titleTapCount++;
+  clearTimeout(titleTapTimer);
+  titleTapTimer = setTimeout(() => { titleTapCount = 0; }, 1800);
+  if (titleTapCount >= 5) {
+    titleTapCount = 0;
+    openPrivacyModal();
+  }
+}
+async function toggleStoryLock(id) {
+  const s = await dbGet(id);
+  if (!s) return;
+  s.hidden = !s.hidden;
+  await dbPut(s);
+  toast(s.hidden ? "Story locked — hidden until you unlock" : "Story unlocked and visible");
+  renderLibrary();
+}
+async function sha256Hex(text) {
+  const enc = new TextEncoder().encode(text);
+  const buf = await crypto.subtle.digest("SHA-256", enc);
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+async function openPrivacyModal() {
+  const hasPasscode = !!localStorage.getItem("waypoint-lock-hash");
+  const scrim = document.createElement("div");
+  scrim.className = "modal-scrim";
+  scrim.addEventListener("click", (e) => { if (e.target === scrim) scrim.remove(); });
+
+  if (!hasPasscode) {
+    scrim.innerHTML = `
+      <div class="modal">
+        <h3>${ICON.lock} Set up a privacy passcode</h3>
+        <p class="hint">Stories you lock disappear from the library for anyone who doesn't enter this passcode. Nothing on screen hints there's anything hidden.</p>
+        <input type="password" id="pc1" placeholder="Choose a passcode" autocomplete="off">
+        <input type="password" id="pc2" placeholder="Confirm passcode" autocomplete="off">
+        <div class="modal-actions">
+          <button class="btn" id="pcCancel">Cancel</button>
+          <button class="btn btn--primary" id="pcSave">Set passcode</button>
+        </div>
+      </div>`;
+    document.body.appendChild(scrim);
+    scrim.querySelector("#pcCancel").onclick = () => scrim.remove();
+    scrim.querySelector("#pcSave").onclick = async () => {
+      const p1 = scrim.querySelector("#pc1").value, p2 = scrim.querySelector("#pc2").value;
+      if (!p1 || p1.length < 4) { alert("Use at least 4 characters."); return; }
+      if (p1 !== p2) { alert("Those don't match."); return; }
+      localStorage.setItem("waypoint-lock-hash", await sha256Hex(p1));
+      state.unlocked = true;
+      scrim.remove();
+      toast("Passcode set — lock any story from its card");
+      renderLibrary();
+    };
+    return;
+  }
+
+  if (!state.unlocked) {
+    scrim.innerHTML = `
+      <div class="modal">
+        <h3>${ICON.lock} Enter passcode</h3>
+        <p class="hint">Unlock to see and manage your locked stories.</p>
+        <input type="password" id="pcEnter" placeholder="Passcode" autocomplete="off">
+        <div class="modal-actions">
+          <button class="btn" id="pcCancel">Cancel</button>
+          <button class="btn btn--primary" id="pcUnlock">Unlock</button>
+        </div>
+      </div>`;
+    document.body.appendChild(scrim);
+    scrim.querySelector("#pcCancel").onclick = () => scrim.remove();
+    const tryUnlock = async () => {
+      const val = scrim.querySelector("#pcEnter").value;
+      const hash = await sha256Hex(val);
+      if (hash === localStorage.getItem("waypoint-lock-hash")) {
+        state.unlocked = true;
+        scrim.remove();
+        toast("Unlocked");
+        renderLibrary();
+      } else {
+        toast("Incorrect passcode");
+      }
+    };
+    scrim.querySelector("#pcUnlock").onclick = tryUnlock;
+    scrim.querySelector("#pcEnter").addEventListener("keydown", (e) => { if (e.key === "Enter") tryUnlock(); });
+    return;
+  }
+
+  const hiddenCount = (await dbGetAll()).filter((s) => s.hidden).length;
+  scrim.innerHTML = `
+    <div class="modal">
+      <h3>${ICON.unlock} Privacy lock</h3>
+      <p class="hint">${hiddenCount} ${hiddenCount === 1 ? "story is" : "stories are"} currently locked. Toggle the lock icon on any story card to lock or unlock it.</p>
+      <div class="modal-actions">
+        <button class="btn" id="pcChangeCode">Change passcode</button>
+        <button class="btn btn--primary" id="pcLockNow">Lock now</button>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn--danger btn--block" id="pcTurnOff">Turn off privacy lock</button>
+      </div>
+    </div>`;
+  document.body.appendChild(scrim);
+  scrim.querySelector("#pcLockNow").onclick = () => { state.unlocked = false; scrim.remove(); toast("Locked"); renderLibrary(); };
+  scrim.querySelector("#pcChangeCode").onclick = () => { localStorage.removeItem("waypoint-lock-hash"); scrim.remove(); openPrivacyModal(); };
+  scrim.querySelector("#pcTurnOff").onclick = async () => {
+    if (!confirm("Turn off the privacy lock? Any locked stories will become visible to anyone using the app.")) return;
+    localStorage.removeItem("waypoint-lock-hash");
+    const all = await dbGetAll();
+    for (const st of all) { if (st.hidden) { st.hidden = false; await dbPut(st); } }
+    state.unlocked = false;
+    scrim.remove();
+    toast("Privacy lock turned off");
+    renderLibrary();
+  };
 }
 
 function openNewStoryModal() {
@@ -440,7 +564,8 @@ async function exportStoryById(id) {
   downloadStoryFile(s);
 }
 function downloadStoryFile(s) {
-  const blob = new Blob([JSON.stringify(s, null, 2)], { type: "application/json" });
+  const exportable = { ...s, hidden: false };
+  const blob = new Blob([JSON.stringify(exportable, null, 2)], { type: "application/json" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = `${(s.title || "story").replace(/[^a-z0-9\- ]/gi, "").trim() || "story"}.waypoint.json`;
