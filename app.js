@@ -77,7 +77,7 @@ function renderTokensHTML(text, story) {
     out += escapeHtml(src.slice(lastIndex, m.index));
     const raw = m[1];
     if (/^img:/i.test(raw.trim())) {
-      const item = resolveMediaToken(raw.trim().slice(4), story);
+      const item = storyCanUseLibrary(story) ? resolveMediaToken(raw.trim().slice(4), story) : null;
       out += item
         ? `<span class="reader-image-block"><img class="reader-image" src="${item.dataUrl}" alt="${escapeHtml(item.name)}" loading="lazy"></span>`
         : "";
@@ -171,9 +171,19 @@ function makeStory(title, type) {
 }
 
 /* ---------- app state ---------- */
-const state = { current: null, drawerOpen: false, drawerTab: "characters", saveTimer: null, unlocked: false };
+const state = { current: null, drawerOpen: false, drawerTab: "characters", drawerStandalone: false, saveTimer: null, unlocked: false };
 const app = document.getElementById("app");
 let readerHistory = [];
+
+/* the shared image library is a privacy-adjacent feature: by default only
+   locked (hidden) stories may use it, unless the "accessible to all" switch
+   is turned on from the privacy area */
+function libraryAccessibleToAll() {
+  return localStorage.getItem("waypoint-library-accessible-to-all") === "1";
+}
+function storyCanUseLibrary(story) {
+  return !!(story && story.hidden) || libraryAccessibleToAll();
+}
 
 /* ---------- theme (light / dark) ---------- */
 function currentTheme() {
@@ -504,6 +514,13 @@ async function openPrivacyModal() {
     <div class="modal">
       <h3>${ICON.unlock} Privacy lock</h3>
       <p class="hint">${hiddenCount} ${hiddenCount === 1 ? "story is" : "stories are"} currently locked. Toggle the lock icon on any story card to lock or unlock it.</p>
+
+      <button class="btn btn--block" id="pcOpenLibrary">${ICON.book} Manage image library</button>
+      <label class="toggle-row">
+        <input type="checkbox" id="pcLibToggle" ${libraryAccessibleToAll() ? "checked" : ""}>
+        <span>Make the image library available to every story, not just locked ones</span>
+      </label>
+
       <div class="modal-actions">
         <button class="btn" id="pcChangeCode">Change passcode</button>
         <button class="btn btn--primary" id="pcLockNow">Lock now</button>
@@ -513,6 +530,12 @@ async function openPrivacyModal() {
       </div>
     </div>`;
   document.body.appendChild(scrim);
+  scrim.querySelector("#pcOpenLibrary").onclick = () => { scrim.remove(); openStandaloneLibrary(); };
+  scrim.querySelector("#pcLibToggle").onchange = (e) => {
+    localStorage.setItem("waypoint-library-accessible-to-all", e.target.checked ? "1" : "0");
+    toast(e.target.checked ? "Library now available to every story" : "Library restricted to locked stories only");
+    refreshUnderlyingTextIfVisible();
+  };
   scrim.querySelector("#pcLockNow").onclick = () => { state.unlocked = false; scrim.remove(); toast("Locked"); renderLibrary(); };
   scrim.querySelector("#pcChangeCode").onclick = () => { localStorage.removeItem("waypoint-lock-hash"); scrim.remove(); openPrivacyModal(); };
   scrim.querySelector("#pcTurnOff").onclick = async () => {
@@ -615,7 +638,16 @@ function ensureDrawerShell() {
 function openDrawer(tab) {
   ensureDrawerShell();
   state.drawerOpen = true;
+  state.drawerStandalone = false;
   state.drawerTab = tab || state.drawerTab || "characters";
+  renderDrawer();
+  document.querySelector(".drawer-scrim").classList.add("drawer-scrim--open");
+  document.querySelector(".drawer").classList.add("drawer--open");
+}
+function openStandaloneLibrary() {
+  ensureDrawerShell();
+  state.drawerOpen = true;
+  state.drawerStandalone = true;
   renderDrawer();
   document.querySelector(".drawer-scrim").classList.add("drawer-scrim--open");
   document.querySelector(".drawer").classList.add("drawer--open");
@@ -627,23 +659,25 @@ function closeDrawer() {
   if (dr) dr.classList.remove("drawer--open");
 }
 function renderDrawer() {
+  if (state.drawerStandalone) return renderStandaloneLibraryDrawer();
   const s = state.current;
   const drawer = document.querySelector(".drawer");
   const tab = state.drawerTab;
+  const allowed = storyCanUseLibrary(s);
   const hints = {
     characters: "Rename anyone — every mention updates across the whole story.",
-    images: "Placeholders like {{img:image1}} — point each one at any picture, and swap it anytime.",
-    library: "Your photo shelf, shared by every story in the app.",
+    images: allowed ? "Placeholders like {{img:image1}} — point each one at any picture, and swap it anytime." : "This story doesn't have access to the shared library right now.",
+    library: allowed ? "Your photo shelf, shared by every story allowed to use it." : "This story doesn't have access to the shared library right now.",
   };
   const footers = {
     characters: `<button class="btn btn--block" id="addChar">${ICON.plus} Add character</button>`,
-    images: `<button class="btn btn--block" id="addSlot">${ICON.plus} Add image placeholder</button>`,
-    library: `<button class="btn btn--block" id="addLibraryImage">${ICON.plus} Add photo to library</button>
+    images: allowed ? `<button class="btn btn--block" id="addSlot">${ICON.plus} Add image placeholder</button>` : "",
+    library: allowed ? `<button class="btn btn--block" id="addLibraryImage">${ICON.plus} Add photo to library</button>
       <div class="drawer__footer-row">
         <button class="btn btn--sm btn--ghost" id="exportLibrary">${ICON.download} Export library</button>
         <button class="btn btn--sm btn--ghost" id="importLibrary">${ICON.upload} Import library</button>
       </div>
-      <input type="file" id="libraryFile" accept="application/json" style="display:none">`,
+      <input type="file" id="libraryFile" accept="application/json" style="display:none">` : "",
   };
   drawer.innerHTML = `
     <div class="drawer__header">
@@ -659,9 +693,49 @@ function renderDrawer() {
   drawer.querySelectorAll(".drawer__tab").forEach((btn) => {
     btn.addEventListener("click", () => { state.drawerTab = btn.dataset.tab; renderDrawer(); });
   });
-  if (tab === "characters") renderCharacterTab(drawer, s);
-  else if (tab === "images") renderSlotsTab(drawer, s);
+  if (tab === "characters") { renderCharacterTab(drawer, s); return; }
+  if (!allowed) { renderLibraryLockedNotice(drawer, s); return; }
+  if (tab === "images") renderSlotsTab(drawer, s);
   else renderLibraryTab(drawer, s);
+}
+
+function renderLibraryLockedNotice(drawer, s) {
+  const body = drawer.querySelector("#drawerBody");
+  body.innerHTML = `
+    <div class="library-locked-notice">
+      ${ICON.lock}
+      <p>The shared image library is only available to locked stories, to keep private pictures out of stories anyone can open.</p>
+      <button class="btn btn--sm btn--primary" id="lockThisStory">${ICON.lock} Lock this story</button>
+      <p class="library-locked-notice__hint">Or turn on library access for every story from the privacy area — tap the app title 5 times on the main screen.</p>
+    </div>`;
+  body.querySelector("#lockThisStory").onclick = async () => {
+    s.hidden = true;
+    await dbPut(s);
+    toast("Story locked");
+    renderDrawer();
+  };
+}
+
+/* the standalone view: manage the shared library without opening any story */
+function renderStandaloneLibraryDrawer() {
+  const drawer = document.querySelector(".drawer");
+  drawer.innerHTML = `
+    <div class="drawer__header">
+      <div class="drawer__tabs">
+        <button class="drawer__tab drawer__tab--active" disabled>${ICON.book} Image Library</button>
+      </div>
+      <p>Your photo shelf, shared by every story allowed to use it.</p>
+    </div>
+    <div class="drawer__body" id="drawerBody"></div>
+    <div class="drawer__footer">
+      <button class="btn btn--block" id="addLibraryImage">${ICON.plus} Add photo to library</button>
+      <div class="drawer__footer-row">
+        <button class="btn btn--sm btn--ghost" id="exportLibrary">${ICON.download} Export library</button>
+        <button class="btn btn--sm btn--ghost" id="importLibrary">${ICON.upload} Import library</button>
+      </div>
+      <input type="file" id="libraryFile" accept="application/json" style="display:none">
+    </div>`;
+  renderLibraryTab(drawer, null);
 }
 
 function renderCharacterTab(drawer, s) {
@@ -1170,6 +1244,10 @@ function renderMediaToolbar(textareaEl) {
   const toolbar = document.getElementById("mediaToolbar");
   if (!toolbar) return;
   const textarea = textareaEl || document.getElementById("chText");
+  if (!storyCanUseLibrary(s)) {
+    toolbar.innerHTML = `<span style="font-size:12px;color:var(--ink-faint);">${ICON.lock} The image library is only available to locked stories.</span>`;
+    return;
+  }
   if (s.media.length === 0) {
     toolbar.innerHTML = `<span style="font-size:12px;color:var(--ink-faint);">No image placeholders yet — add one from the ${ICON.image} menu above, then drop it in here.</span>`;
     return;
