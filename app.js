@@ -704,9 +704,9 @@ function renderLibraryLockedNotice(drawer, s) {
   body.innerHTML = `
     <div class="library-locked-notice">
       ${ICON.lock}
-      <p>The shared image library is only available to locked stories, to keep private pictures out of stories anyone can open.</p>
+      <p>The shared library is not available.</p>
       <button class="btn btn--sm btn--primary" id="lockThisStory">${ICON.lock} Lock this story</button>
-      <p class="library-locked-notice__hint">Or turn on library access for every story from the privacy area — tap the app title 5 times on the main screen.</p>
+      <p class="library-locked-notice__hint">Or turn on library access.</p>
     </div>`;
   body.querySelector("#lockThisStory").onclick = async () => {
     s.hidden = true;
